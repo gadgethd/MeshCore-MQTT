@@ -49,8 +49,6 @@ That script builds all discovered ESP repeater targets, prints which ones passed
 ```bash
 BUILD_TEST_KEEP_ARTIFACTS=1 ./bin/build-test.sh
 ```
-## About MeshCore
-
 Currently validated MQTT observer targets:
 
 * `Heltec_E213_repeater_`
@@ -75,6 +73,8 @@ Currently validated MQTT observer targets:
 * `Meshadventurer_sx1268_repeater`
 * `RAK_3112_repeater`
 * `Xiao_S3_WIO_repeater`
+
+## About MeshCore
 
 MeshCore is a lightweight, portable C++ library that enables multi-hop packet routing for embedded projects using LoRa and other packet radios. It is designed for developers who want to create resilient, decentralized communication networks that work without the internet.
 
