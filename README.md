@@ -1,5 +1,57 @@
 ## About MeshCore
 
+## MQTT Observer Build In This Fork
+
+This fork adds an outbound-only MQTT observer firmware for ESP-based MeshCore repeater targets. It keeps normal MeshCore packet handling, then publishes MeshCore-compatible MQTT messages over WiFi using secure WebSockets.
+
+What was added in this fork:
+
+* Direct MQTT observer support for ESP repeater builds
+* Secure WebSocket MQTT publishing from the device itself
+* MeshCore-compatible `status` and `packets` topics
+* A generic interactive build script for supported ESP repeater targets
+* A build sweep script for checking which ESP repeater targets compile
+
+How to build a firmware:
+
+```bash
+cd /path/to/MeshCore
+./bin/build-meshcore-mqtt-observer.sh
+```
+
+That script will prompt for:
+
+* Base repeater env / board
+* Observer name
+* Admin password
+* WiFi SSID and password
+* MQTT topic root
+* MQTT WebSocket URI
+* MQTT username and password
+* Observer IATA code
+* Model label
+* Client version
+
+Firmware output:
+
+* `firmware-update.bin` for app/update flashing at `0x10000`
+* `firmware-full.bin` for full-device flashing at `0x00000`
+
+The build output is written under `.pio/build/<selected_env>_mqtt_dynamic/`
+
+How to run the compile sweep:
+
+```bash
+cd /path/to/MeshCore
+./bin/build-test.sh
+```
+
+That script builds all discovered ESP repeater targets, prints which ones passed or failed, and keeps logs under `.build-test/`. By default it cleans up the per-target firmware artifacts after each result. To keep those artifacts, run:
+
+```bash
+BUILD_TEST_KEEP_ARTIFACTS=1 ./bin/build-test.sh
+```
+
 MeshCore is a lightweight, portable C++ library that enables multi-hop packet routing for embedded projects using LoRa and other packet radios. It is designed for developers who want to create resilient, decentralized communication networks that work without the internet.
 
 ## 🔍 What is MeshCore?
