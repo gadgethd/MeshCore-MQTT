@@ -109,10 +109,6 @@ void MqttReporter::ensureIdentityStrings() {
   snprintf(_client_id, sizeof(_client_id), "meshcore_%.*s", 16, _origin_id);
   snprintf(_status_topic, sizeof(_status_topic), "%s/%s/%s/status", MQTT_TOPIC_ROOT, MQTT_IATA, _origin_id);
   snprintf(_packets_topic, sizeof(_packets_topic), "%s/%s/%s/packets", MQTT_TOPIC_ROOT, MQTT_IATA, _origin_id);
-
-  char radio_buf[64];
-  snprintf(radio_buf, sizeof(radio_buf), "SX1262 %.3f/%.0f/%d/%d", (double)LORA_FREQ, (double)LORA_BW, LORA_SF, LORA_CR);
-  _radio_string = radio_buf;
   _offline_payload = buildStatusPayload("offline");
 }
 
@@ -258,6 +254,17 @@ String MqttReporter::buildDateField() const {
   return String(buf);
 }
 
+String MqttReporter::buildRadioString() const {
+  char radio_buf[64];
+  const NodePrefs *prefs = _mesh->getNodePrefs();
+  float freq = prefs ? prefs->freq : LORA_FREQ;
+  float bw = prefs ? prefs->bw : LORA_BW;
+  int sf = prefs ? prefs->sf : LORA_SF;
+  int cr = prefs ? prefs->cr : LORA_CR;
+  snprintf(radio_buf, sizeof(radio_buf), "SX1262 %.3f/%.0f/%d/%d", (double)freq, (double)bw, sf, cr);
+  return String(radio_buf);
+}
+
 String MqttReporter::buildStatusPayload(const char *status) const {
   String payload = "{";
   if (status != nullptr && status[0] != '\0') {
@@ -267,7 +274,7 @@ String MqttReporter::buildStatusPayload(const char *status) const {
   payload += ",\"origin_id\":\"" + String(_origin_id) + "\"";
   payload += ",\"model\":\"" + jsonEscape(MQTT_MODEL) + "\"";
   payload += ",\"firmware_version\":\"" + jsonEscape(FIRMWARE_VERSION) + "\"";
-  payload += ",\"radio\":\"" + jsonEscape(_radio_string.c_str()) + "\"";
+  payload += ",\"radio\":\"" + jsonEscape(buildRadioString().c_str()) + "\"";
   payload += ",\"client_version\":\"" + jsonEscape(MQTT_CLIENT_VERSION) + "\"";
   payload += ",\"timestamp\":\"" + jsonEscape(buildIsoTimestamp().c_str()) + "\"";
   payload += "}";

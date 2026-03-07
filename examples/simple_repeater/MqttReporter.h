@@ -27,7 +27,7 @@ class MyMesh;
 #endif
 
 #ifndef MQTT_URI
-  #define MQTT_URI "wss://mqtt.ukmesh.com:443/"
+  #define MQTT_URI ""
 #endif
 
 #ifndef MQTT_USERNAME
@@ -114,6 +114,7 @@ private:
   String buildIsoTimestamp() const;
   String buildTimeField() const;
   String buildDateField() const;
+  String buildRadioString() const;
   String buildStatusPayload(const char *status) const;
   String buildPacketPayload(
       const char *direction,
