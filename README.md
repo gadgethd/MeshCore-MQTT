@@ -1,5 +1,3 @@
-## About MeshCore
-
 ## MQTT Observer Build In This Fork
 
 This fork adds an outbound-only MQTT observer firmware for ESP-based MeshCore repeater targets. It keeps normal MeshCore packet handling, then publishes MeshCore-compatible MQTT messages over WiFi using secure WebSockets.
@@ -51,6 +49,7 @@ That script builds all discovered ESP repeater targets, prints which ones passed
 ```bash
 BUILD_TEST_KEEP_ARTIFACTS=1 ./bin/build-test.sh
 ```
+## About MeshCore
 
 MeshCore is a lightweight, portable C++ library that enables multi-hop packet routing for embedded projects using LoRa and other packet radios. It is designed for developers who want to create resilient, decentralized communication networks that work without the internet.
 
