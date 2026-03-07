@@ -1,0 +1,380 @@
+#include "MqttReporter.h"
+
+#if defined(ESP32) && defined(WITH_MQTT_REPORTER)
+
+#include "MyMesh.h"
+
+#include <esp_crt_bundle.h>
+#include <esp_log.h>
+
+extern "C" esp_err_t esp_crt_bundle_attach(void *conf);
+
+MqttReporter::MqttReporter(MyMesh &mesh, mesh::RTCClock &clock)
+    : _mesh(&mesh), _clock(&clock), _mqtt_client(nullptr) {
+  _last_wifi_attempt = 0;
+  _last_status_publish = 0;
+  _time_synced = false;
+  _mqtt_started = false;
+  _mqtt_connected = false;
+  _origin_id[0] = '\0';
+  _client_id[0] = '\0';
+  _status_topic[0] = '\0';
+  _packets_topic[0] = '\0';
+}
+
+MqttReporter::~MqttReporter() {
+  if (_mqtt_client != nullptr) {
+    esp_mqtt_client_stop(_mqtt_client);
+    esp_mqtt_client_destroy(_mqtt_client);
+    _mqtt_client = nullptr;
+  }
+}
+
+void MqttReporter::begin() {
+  ensureIdentityStrings();
+  esp_log_level_set("MQTT_CLIENT", ESP_LOG_INFO);
+  esp_log_level_set("TRANSPORT_BASE", ESP_LOG_INFO);
+  esp_log_level_set("TRANSPORT_WS", ESP_LOG_INFO);
+  esp_log_level_set("TRANS_SSL", ESP_LOG_INFO);
+  esp_log_level_set("esp-tls", ESP_LOG_INFO);
+  WiFi.mode(WIFI_STA);
+  WiFi.setAutoReconnect(true);
+  WiFi.setSleep(false);
+  Serial.printf("MQTT reporter: WiFi SSID='%s' URI='%s'\n", WIFI_SSID, MQTT_URI);
+  connectWiFi();
+}
+
+void MqttReporter::loop() {
+  ensureIdentityStrings();
+
+  if (WiFi.status() != WL_CONNECTED) {
+    _mqtt_connected = false;
+    connectWiFi();
+    return;
+  }
+
+  if (!_time_synced) {
+    syncTimeFromNtp();
+    if (mqttNeedsTimeSync() && !_time_synced) {
+      return;
+    }
+  }
+
+  if (!_mqtt_started) {
+    connectMQTT();
+  }
+
+  if (_mqtt_connected) {
+    unsigned long now = millis();
+    if (now - _last_status_publish >= (unsigned long)MQTT_STATUS_INTERVAL_SECS * 1000UL) {
+      publishStatus("online");
+    }
+  }
+}
+
+void MqttReporter::publishRxRaw(const uint8_t raw[], int len) {
+  if (raw == nullptr || len <= 0) {
+    _last_rx_raw = "";
+    return;
+  }
+  _last_rx_raw = bytesToHex(raw, len);
+}
+
+void MqttReporter::publishRxPacket(mesh::Packet *pkt, int len, float score, int rssi, float snr, uint32_t duration_ms) {
+  if (!_mqtt_connected || _mqtt_client == nullptr || pkt == nullptr) return;
+
+  String raw_hex = _last_rx_raw.length() ? _last_rx_raw : bytesToHex(pkt->payload, pkt->payload_len);
+  String payload = buildPacketPayload("rx", pkt, len, raw_hex, score, rssi, snr, duration_ms, true);
+  esp_mqtt_client_publish(_mqtt_client, _packets_topic, payload.c_str(), 0, 0, 0);
+}
+
+void MqttReporter::publishTxPacket(mesh::Packet *pkt, int len) {
+  if (!_mqtt_connected || _mqtt_client == nullptr || pkt == nullptr) return;
+
+  uint8_t raw[MAX_TRANS_UNIT];
+  int raw_len = pkt->writeTo(raw);
+  String payload = buildPacketPayload("tx", pkt, len, bytesToHex(raw, raw_len), 0.0f, 0, 0.0f, 0, false);
+  esp_mqtt_client_publish(_mqtt_client, _packets_topic, payload.c_str(), 0, 0, 0);
+}
+
+void MqttReporter::ensureIdentityStrings() {
+  if (_origin_id[0] != '\0') return;
+
+  const mesh::LocalIdentity &self = _mesh->getSelfId();
+  for (size_t i = 0; i < PUB_KEY_SIZE; ++i) {
+    snprintf(&_origin_id[i * 2], 3, "%02X", self.pub_key[i]);
+  }
+  _origin_id[PUB_KEY_SIZE * 2] = '\0';
+
+  snprintf(_client_id, sizeof(_client_id), "meshcore_%.*s", 16, _origin_id);
+  snprintf(_status_topic, sizeof(_status_topic), "%s/%s/%s/status", MQTT_TOPIC_ROOT, MQTT_IATA, _origin_id);
+  snprintf(_packets_topic, sizeof(_packets_topic), "%s/%s/%s/packets", MQTT_TOPIC_ROOT, MQTT_IATA, _origin_id);
+
+  char radio_buf[64];
+  snprintf(radio_buf, sizeof(radio_buf), "SX1262 %.3f/%.0f/%d/%d", (double)LORA_FREQ, (double)LORA_BW, LORA_SF, LORA_CR);
+  _radio_string = radio_buf;
+  _offline_payload = buildStatusPayload("offline");
+}
+
+bool MqttReporter::connectWiFi() {
+  if (WiFi.status() == WL_CONNECTED) return true;
+
+  unsigned long now = millis();
+  if (now - _last_wifi_attempt < 5000UL) return false;
+  _last_wifi_attempt = now;
+
+  Serial.printf("MQTT reporter: connecting WiFi to '%s'\n", WIFI_SSID);
+  WiFi.begin(WIFI_SSID, WIFI_PWD);
+  return false;
+}
+
+bool MqttReporter::connectMQTT() {
+  if (_mqtt_started) return true;
+  if (WiFi.status() != WL_CONNECTED) return false;
+  if (mqttNeedsTimeSync() && !_time_synced) return false;
+
+  Serial.printf(
+      "MQTT reporter: init MQTT heap=%u uri='%s' user='%s'\n",
+      (unsigned int)ESP.getFreeHeap(),
+      MQTT_URI,
+      MQTT_USERNAME);
+
+  esp_mqtt_client_config_t config = {};
+  config.uri = MQTT_URI;
+  config.client_id = _client_id;
+  config.username = MQTT_USERNAME;
+  config.password = MQTT_PASSWORD;
+  config.keepalive = 60;
+  config.disable_auto_reconnect = false;
+  config.buffer_size = 2048;
+  config.out_buffer_size = 2048;
+  config.lwt_topic = _status_topic;
+  config.lwt_msg = _offline_payload.c_str();
+  config.lwt_qos = 0;
+  config.lwt_retain = MQTT_RETAIN_STATUS != 0;
+  config.user_context = this;
+  config.event_handle = mqttEventHandler;
+  // Let the URI parser choose ws/wss transport to avoid config conflicts.
+  if (strncmp(MQTT_URI, "wss://", 6) == 0) {
+    config.crt_bundle_attach = esp_crt_bundle_attach;
+  }
+
+  _mqtt_client = esp_mqtt_client_init(&config);
+  if (_mqtt_client == nullptr) {
+    Serial.println("MQTT reporter: esp_mqtt_client_init failed");
+    return false;
+  }
+
+  if (esp_mqtt_client_start(_mqtt_client) != ESP_OK) {
+    Serial.println("MQTT reporter: esp_mqtt_client_start failed");
+    esp_mqtt_client_destroy(_mqtt_client);
+    _mqtt_client = nullptr;
+    return false;
+  }
+
+  Serial.println("MQTT reporter: MQTT client started");
+  _mqtt_started = true;
+  return true;
+}
+
+void MqttReporter::syncTimeFromNtp() {
+  configTime(0, 0, MQTT_NTP_SERVER);
+
+  time_t now = time(nullptr);
+  unsigned long start = millis();
+  while (now < 1700000000 && millis() - start < 10000UL) {
+    delay(200);
+    now = time(nullptr);
+  }
+
+  if (now >= 1700000000) {
+    _clock->setCurrentTime((uint32_t)now);
+    _time_synced = true;
+    Serial.println("MQTT reporter: NTP sync complete");
+  } else if (mqttNeedsTimeSync()) {
+    Serial.println("MQTT reporter: NTP sync failed");
+  }
+}
+
+void MqttReporter::publishStatus(const char *status) {
+  if (!_mqtt_connected || _mqtt_client == nullptr) return;
+
+  String payload = buildStatusPayload(status);
+  esp_mqtt_client_publish(_mqtt_client, _status_topic, payload.c_str(), 0, 0, MQTT_RETAIN_STATUS != 0);
+  _last_status_publish = millis();
+}
+
+void MqttReporter::handleMqttEvent(esp_mqtt_event_handle_t event) {
+  switch (event->event_id) {
+    case MQTT_EVENT_CONNECTED:
+      _mqtt_connected = true;
+      Serial.println("MQTT reporter: connected");
+      publishStatus("online");
+      break;
+    case MQTT_EVENT_DISCONNECTED:
+      Serial.println("MQTT reporter: disconnected");
+      _mqtt_connected = false;
+      break;
+    case MQTT_EVENT_ERROR:
+      Serial.printf("MQTT reporter: error type=%d\n", event->error_handle ? event->error_handle->error_type : -1);
+      _mqtt_connected = false;
+      break;
+    default:
+      break;
+  }
+}
+
+bool MqttReporter::mqttNeedsTimeSync() const {
+  return strncmp(MQTT_URI, "wss://", 6) == 0;
+}
+
+String MqttReporter::buildIsoTimestamp() const {
+  DateTime dt(_clock->getCurrentTime());
+  char buf[40];
+  snprintf(
+      buf,
+      sizeof(buf),
+      "%04d-%02d-%02dT%02d:%02d:%02dZ",
+      dt.year(),
+      dt.month(),
+      dt.day(),
+      dt.hour(),
+      dt.minute(),
+      dt.second());
+  return String(buf);
+}
+
+String MqttReporter::buildTimeField() const {
+  DateTime dt(_clock->getCurrentTime());
+  char buf[16];
+  snprintf(buf, sizeof(buf), "%02d:%02d:%02d", dt.hour(), dt.minute(), dt.second());
+  return String(buf);
+}
+
+String MqttReporter::buildDateField() const {
+  DateTime dt(_clock->getCurrentTime());
+  char buf[16];
+  snprintf(buf, sizeof(buf), "%d/%d/%d", dt.day(), dt.month(), dt.year());
+  return String(buf);
+}
+
+String MqttReporter::buildStatusPayload(const char *status) const {
+  String payload = "{";
+  if (status != nullptr && status[0] != '\0') {
+    payload += "\"status\":\"" + jsonEscape(status) + "\",";
+  }
+  payload += "\"origin\":\"" + jsonEscape(_mesh->getNodeName()) + "\"";
+  payload += ",\"origin_id\":\"" + String(_origin_id) + "\"";
+  payload += ",\"model\":\"" + jsonEscape(MQTT_MODEL) + "\"";
+  payload += ",\"firmware_version\":\"" + jsonEscape(FIRMWARE_VERSION) + "\"";
+  payload += ",\"radio\":\"" + jsonEscape(_radio_string.c_str()) + "\"";
+  payload += ",\"client_version\":\"" + jsonEscape(MQTT_CLIENT_VERSION) + "\"";
+  payload += ",\"timestamp\":\"" + jsonEscape(buildIsoTimestamp().c_str()) + "\"";
+  payload += "}";
+  return payload;
+}
+
+String MqttReporter::buildPacketPayload(
+    const char *direction,
+    mesh::Packet *pkt,
+    int len,
+    const String &raw_hex,
+    float score,
+    int rssi,
+    float snr,
+    uint32_t duration_ms,
+    bool include_radio_metrics) const {
+  uint8_t packet_hash[MAX_HASH_SIZE];
+  pkt->calculatePacketHash(packet_hash);
+  String hash_hex = bytesToHex(packet_hash, MAX_HASH_SIZE);
+
+  String payload = "{";
+  payload += "\"origin\":\"" + jsonEscape(_mesh->getNodeName()) + "\"";
+  payload += ",\"origin_id\":\"" + String(_origin_id) + "\"";
+  payload += ",\"timestamp\":\"" + jsonEscape(buildIsoTimestamp().c_str()) + "\"";
+  payload += ",\"type\":\"PACKET\"";
+  payload += ",\"direction\":\"" + jsonEscape(direction) + "\"";
+  payload += ",\"time\":\"" + jsonEscape(buildTimeField().c_str()) + "\"";
+  payload += ",\"date\":\"" + jsonEscape(buildDateField().c_str()) + "\"";
+  payload += ",\"len\":\"" + String(len) + "\"";
+  payload += ",\"packet_type\":\"" + String(pkt->getPayloadType()) + "\"";
+  payload += ",\"route\":\"" + String(pkt->isRouteDirect() ? "D" : "F") + "\"";
+  payload += ",\"payload_len\":\"" + String(pkt->payload_len) + "\"";
+  payload += ",\"raw\":\"" + raw_hex + "\"";
+
+  if (include_radio_metrics) {
+    payload += ",\"SNR\":\"" + String((int)snr) + "\"";
+    payload += ",\"RSSI\":\"" + String(rssi) + "\"";
+    payload += ",\"score\":\"" + String((int)(score * 1000.0f)) + "\"";
+    payload += ",\"duration\":\"" + String(duration_ms) + "\"";
+  }
+
+  payload += ",\"hash\":\"" + hash_hex + "\"";
+
+  if (pkt->isRouteDirect() && shouldIncludePath(pkt)) {
+    char path_buf[16];
+    snprintf(path_buf, sizeof(path_buf), "%02X -> %02X", (uint32_t)pkt->payload[1], (uint32_t)pkt->payload[0]);
+    payload += ",\"path\":\"" + String(path_buf) + "\"";
+  }
+
+  payload += "}";
+  return payload;
+}
+
+esp_err_t MqttReporter::mqttEventHandler(esp_mqtt_event_handle_t event) {
+  if (event == nullptr || event->user_context == nullptr) {
+    return ESP_OK;
+  }
+
+  static_cast<MqttReporter *>(event->user_context)->handleMqttEvent(event);
+  return ESP_OK;
+}
+
+String MqttReporter::jsonEscape(const char *input) {
+  String out;
+  if (input == nullptr) return out;
+
+  while (*input) {
+    char c = *input++;
+    switch (c) {
+      case '\\':
+        out += "\\\\";
+        break;
+      case '"':
+        out += "\\\"";
+        break;
+      case '\n':
+        out += "\\n";
+        break;
+      case '\r':
+        out += "\\r";
+        break;
+      case '\t':
+        out += "\\t";
+        break;
+      default:
+        out += c;
+        break;
+    }
+  }
+  return out;
+}
+
+String MqttReporter::bytesToHex(const uint8_t *data, size_t len) {
+  String out;
+  out.reserve(len * 2);
+  for (size_t i = 0; i < len; ++i) {
+    char buf[3];
+    snprintf(buf, sizeof(buf), "%02X", data[i]);
+    out += buf;
+  }
+  return out;
+}
+
+bool MqttReporter::shouldIncludePath(const mesh::Packet *pkt) {
+  if (pkt == nullptr || pkt->payload_len < 2) return false;
+  uint8_t type = pkt->getPayloadType();
+  return type == PAYLOAD_TYPE_PATH || type == PAYLOAD_TYPE_REQ || type == PAYLOAD_TYPE_RESPONSE || type == PAYLOAD_TYPE_TXT_MSG;
+}
+
+#endif

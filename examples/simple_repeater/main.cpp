@@ -2,6 +2,9 @@
 #include <Mesh.h>
 
 #include "MyMesh.h"
+#if defined(ESP32) && defined(WITH_MQTT_REPORTER)
+  #include "MqttReporter.h"
+#endif
 
 #ifdef DISPLAY_CLASS
   #include "UITask.h"
@@ -12,6 +15,9 @@ StdRNG fast_rng;
 SimpleMeshTables tables;
 
 MyMesh the_mesh(board, radio_driver, *new ArduinoMillis(), fast_rng, rtc_clock, tables);
+#if defined(ESP32) && defined(WITH_MQTT_REPORTER)
+MqttReporter mqtt_reporter(the_mesh, rtc_clock);
+#endif
 
 void halt() {
   while (1) ;
@@ -95,6 +101,10 @@ void setup() {
 
   the_mesh.begin(fs);
 
+#if defined(ESP32) && defined(WITH_MQTT_REPORTER)
+  mqtt_reporter.begin();
+#endif
+
 #ifdef DISPLAY_CLASS
   ui_task.begin(the_mesh.getNodePrefs(), FIRMWARE_BUILD_DATE, FIRMWARE_VERSION);
 #endif
@@ -148,6 +158,9 @@ void loop() {
 #endif
 
   the_mesh.loop();
+#if defined(ESP32) && defined(WITH_MQTT_REPORTER)
+  mqtt_reporter.loop();
+#endif
   sensors.loop();
 #ifdef DISPLAY_CLASS
   ui_task.loop();

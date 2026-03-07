@@ -1,16 +1,32 @@
 #include "MyMesh.h"
 #include <algorithm>
+#if defined(ESP32) && defined(WITH_MQTT_REPORTER)
+  #include "MqttReporter.h"
+  extern MqttReporter mqtt_reporter;
+#endif
 
 /* ------------------------------ Config -------------------------------- */
 
 #ifndef LORA_FREQ
-  #define LORA_FREQ 915.0
+  #if defined(WITH_MQTT_REPORTER)
+    #define LORA_FREQ 869.525
+  #else
+    #define LORA_FREQ 915.0
+  #endif
 #endif
 #ifndef LORA_BW
-  #define LORA_BW 250
+  #if defined(WITH_MQTT_REPORTER)
+    #define LORA_BW 62.5
+  #else
+    #define LORA_BW 250
+  #endif
 #endif
 #ifndef LORA_SF
-  #define LORA_SF 10
+  #if defined(WITH_MQTT_REPORTER)
+    #define LORA_SF 8
+  #else
+    #define LORA_SF 10
+  #endif
 #endif
 #ifndef LORA_CR
   #define LORA_CR 5
@@ -453,6 +469,9 @@ void MyMesh::logRxRaw(float snr, float rssi, const uint8_t raw[], int len) {
   mesh::Utils::printHex(Serial, raw, len);
   Serial.println();
 #endif
+#if defined(ESP32) && defined(WITH_MQTT_REPORTER)
+  mqtt_reporter.publishRxRaw(raw, len);
+#endif
 }
 
 void MyMesh::logRx(mesh::Packet *pkt, int len, float score) {
@@ -479,6 +498,16 @@ void MyMesh::logRx(mesh::Packet *pkt, int len, float score) {
       f.close();
     }
   }
+
+#if defined(ESP32) && defined(WITH_MQTT_REPORTER)
+  mqtt_reporter.publishRxPacket(
+      pkt,
+      len,
+      score,
+      (int)_radio->getLastRSSI(),
+      _radio->getLastSNR(),
+      _radio->getEstAirtimeFor(len));
+#endif
 }
 
 void MyMesh::logTx(mesh::Packet *pkt, int len) {
@@ -504,6 +533,10 @@ void MyMesh::logTx(mesh::Packet *pkt, int len) {
       f.close();
     }
   }
+
+#if defined(ESP32) && defined(WITH_MQTT_REPORTER)
+  mqtt_reporter.publishTxPacket(pkt, len);
+#endif
 }
 
 void MyMesh::logTxFail(mesh::Packet *pkt, int len) {
@@ -898,6 +931,18 @@ void MyMesh::begin(FILESYSTEM *fs) {
   _fs = fs;
   // load persisted prefs
   _cli.loadPrefs(_fs);
+
+#if defined(WITH_MQTT_REPORTER) && defined(FORCE_BUILD_PREFS) && (FORCE_BUILD_PREFS == 1)
+  // Keep node identity and admin settings authoritative over any older saved prefs.
+  // LoRa radio settings are intentionally excluded so they can be changed at runtime
+  // via the USB CLI without being overwritten on every boot.
+  StrHelper::strncpy(_prefs.node_name, ADVERT_NAME, sizeof(_prefs.node_name));
+  _prefs.node_lat = ADVERT_LAT;
+  _prefs.node_lon = ADVERT_LON;
+  StrHelper::strncpy(_prefs.password, ADMIN_PASSWORD, sizeof(_prefs.password));
+  _cli.savePrefs(_fs);
+#endif
+
   acl.load(_fs, self_id);
   // TODO: key_store.begin();
   region_map.load(_fs);

@@ -1,8 +1,16 @@
 #include "UITask.h"
 #include <Arduino.h>
 #include <helpers/CommonCLI.h>
+#if defined(ESP32) && defined(WITH_MQTT_REPORTER)
+  #include <WiFi.h>
+#ifndef WIFI_SSID
+  #define WIFI_SSID ""
+#endif
+#endif
 
-#define AUTO_OFF_MILLIS      20000  // 20 seconds
+#ifndef AUTO_OFF_MILLIS
+  #define AUTO_OFF_MILLIS      20000  // 20 seconds
+#endif
 #define BOOT_SCREEN_MILLIS   4000   // 4 seconds
 
 // 'meshcore', 128x13px
@@ -62,10 +70,9 @@ void UITask::renderCurrScreen() {
     _display->print(node_type);
   } else {  // home screen
     // node name
-    _display->setCursor(0, 0);
     _display->setTextSize(1);
     _display->setColor(DisplayDriver::GREEN);
-    _display->print(_node_prefs->node_name);
+    _display->drawTextEllipsized(0, 0, _display->width(), _node_prefs->node_name);
 
     // freq / sf
     _display->setCursor(0, 20);
@@ -77,6 +84,18 @@ void UITask::renderCurrScreen() {
     _display->setCursor(0, 30);
     sprintf(tmp, "BW: %03.2f CR: %d", _node_prefs->bw, _node_prefs->cr);
     _display->print(tmp);
+
+#if defined(ESP32) && defined(WITH_MQTT_REPORTER)
+    // configured WiFi SSID
+    _display->setColor(DisplayDriver::LIGHT);
+    _display->drawTextEllipsized(0, 44, _display->width(), WIFI_SSID);
+
+    // live WiFi connection state
+    _display->setCursor(0, 54);
+    _display->setColor(WiFi.status() == WL_CONNECTED ? DisplayDriver::GREEN : DisplayDriver::RED);
+    sprintf(tmp, "WiFi: %s", WiFi.status() == WL_CONNECTED ? "Connected" : "Disconnected");
+    _display->print(tmp);
+#endif
   }
 }
 
@@ -107,8 +126,10 @@ void UITask::loop() {
 
       _next_refresh = millis() + 1000;   // refresh every second
     }
+#if AUTO_OFF_MILLIS > 0
     if (millis() > _auto_off) {
       _display->turnOff();
     }
+#endif
   }
 }
