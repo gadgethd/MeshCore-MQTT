@@ -107,7 +107,8 @@ class CommonCLI {
 
   mesh::RTCClock* getRTCClock() { return _rtc; }
   void savePrefs();
-  void loadPrefsInt(FILESYSTEM* _fs, const char* filename);
+  bool loadPrefsInt(FILESYSTEM* _fs, const char* filename);
+  bool savePrefsInt(FILESYSTEM* _fs, const char* filename);
 
 public:
   CommonCLI(mesh::MainBoard& board, mesh::RTCClock& rtc, SensorManager& sensors, ClientACL& acl, NodePrefs* prefs, CommonCLICallbacks* callbacks)
