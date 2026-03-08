@@ -30,7 +30,8 @@ MqttReporter::~MqttReporter() {
   }
 }
 
-void MqttReporter::begin() {
+void MqttReporter::begin(FILESYSTEM *fs) {
+  _settings.begin(fs);
   ensureIdentityStrings();
   esp_log_level_set("MQTT_CLIENT", ESP_LOG_INFO);
   esp_log_level_set("TRANSPORT_BASE", ESP_LOG_INFO);
@@ -40,7 +41,8 @@ void MqttReporter::begin() {
   WiFi.mode(WIFI_STA);
   WiFi.setAutoReconnect(true);
   WiFi.setSleep(false);
-  Serial.printf("MQTT reporter: WiFi SSID='%s' URI='%s'\n", WIFI_SSID, MQTT_URI);
+  const MqttRuntimeConfig &config = _settings.config();
+  Serial.printf("MQTT reporter: WiFi SSID='%s' URI='%s'\n", config.wifi_ssid, config.uri);
   connectWiFi();
 }
 
@@ -98,64 +100,89 @@ void MqttReporter::publishTxPacket(mesh::Packet *pkt, int len) {
 }
 
 void MqttReporter::ensureIdentityStrings() {
-  if (_origin_id[0] != '\0') return;
+  if (_origin_id[0] == '\0') {
+    const mesh::LocalIdentity &self = _mesh->getSelfId();
+    for (size_t i = 0; i < PUB_KEY_SIZE; ++i) {
+      snprintf(&_origin_id[i * 2], 3, "%02X", self.pub_key[i]);
+    }
+    _origin_id[PUB_KEY_SIZE * 2] = '\0';
 
-  const mesh::LocalIdentity &self = _mesh->getSelfId();
-  for (size_t i = 0; i < PUB_KEY_SIZE; ++i) {
-    snprintf(&_origin_id[i * 2], 3, "%02X", self.pub_key[i]);
+    snprintf(_client_id, sizeof(_client_id), "meshcore_%.*s", 16, _origin_id);
   }
-  _origin_id[PUB_KEY_SIZE * 2] = '\0';
 
-  snprintf(_client_id, sizeof(_client_id), "meshcore_%.*s", 16, _origin_id);
-  snprintf(_status_topic, sizeof(_status_topic), "%s/%s/%s/status", MQTT_TOPIC_ROOT, MQTT_IATA, _origin_id);
-  snprintf(_packets_topic, sizeof(_packets_topic), "%s/%s/%s/packets", MQTT_TOPIC_ROOT, MQTT_IATA, _origin_id);
+  const MqttRuntimeConfig &config = _settings.config();
+  snprintf(_status_topic, sizeof(_status_topic), "%s/%s/%s/status", config.topic_root, config.iata, _origin_id);
+  snprintf(_packets_topic, sizeof(_packets_topic), "%s/%s/%s/packets", config.topic_root, config.iata, _origin_id);
   _offline_payload = buildStatusPayload("offline");
 }
 
+void MqttReporter::resetConnections() {
+  if (_mqtt_client != nullptr) {
+    esp_mqtt_client_stop(_mqtt_client);
+    esp_mqtt_client_destroy(_mqtt_client);
+    _mqtt_client = nullptr;
+  }
+
+  _mqtt_started = false;
+  _mqtt_connected = false;
+  _last_wifi_attempt = 0;
+
+  if (WiFi.getMode() != WIFI_STA) {
+    WiFi.mode(WIFI_STA);
+  }
+  WiFi.disconnect(true, false);
+  WiFi.setAutoReconnect(true);
+  WiFi.setSleep(false);
+}
+
 bool MqttReporter::connectWiFi() {
+  const MqttRuntimeConfig &config = _settings.config();
   if (WiFi.status() == WL_CONNECTED) return true;
+  if (config.wifi_ssid[0] == '\0') return false;
 
   unsigned long now = millis();
   if (now - _last_wifi_attempt < 5000UL) return false;
   _last_wifi_attempt = now;
 
-  Serial.printf("MQTT reporter: connecting WiFi to '%s'\n", WIFI_SSID);
-  WiFi.begin(WIFI_SSID, WIFI_PWD);
+  Serial.printf("MQTT reporter: connecting WiFi to '%s'\n", config.wifi_ssid);
+  WiFi.begin(config.wifi_ssid, config.wifi_pwd);
   return false;
 }
 
 bool MqttReporter::connectMQTT() {
+  const MqttRuntimeConfig &runtime_config = _settings.config();
   if (_mqtt_started) return true;
   if (WiFi.status() != WL_CONNECTED) return false;
+  if (runtime_config.uri[0] == '\0') return false;
   if (mqttNeedsTimeSync() && !_time_synced) return false;
 
   Serial.printf(
       "MQTT reporter: init MQTT heap=%u uri='%s' user='%s'\n",
       (unsigned int)ESP.getFreeHeap(),
-      MQTT_URI,
-      MQTT_USERNAME);
+      runtime_config.uri,
+      runtime_config.username);
 
-  esp_mqtt_client_config_t config = {};
-  config.uri = MQTT_URI;
-  config.client_id = _client_id;
-  config.username = MQTT_USERNAME;
-  config.password = MQTT_PASSWORD;
-  config.keepalive = 60;
-  config.disable_auto_reconnect = false;
-  config.buffer_size = 2048;
-  config.out_buffer_size = 2048;
-  config.lwt_topic = _status_topic;
-  config.lwt_msg = _offline_payload.c_str();
-  config.lwt_qos = 0;
-  config.lwt_retain = MQTT_RETAIN_STATUS != 0;
-  config.user_context = this;
-  config.event_handle = mqttEventHandler;
+  esp_mqtt_client_config_t mqtt_config = {};
+  mqtt_config.uri = runtime_config.uri;
+  mqtt_config.client_id = _client_id;
+  mqtt_config.username = runtime_config.username;
+  mqtt_config.password = runtime_config.password;
+  mqtt_config.keepalive = 60;
+  mqtt_config.disable_auto_reconnect = false;
+  mqtt_config.buffer_size = 2048;
+  mqtt_config.out_buffer_size = 2048;
+  mqtt_config.lwt_topic = _status_topic;
+  mqtt_config.lwt_msg = _offline_payload.c_str();
+  mqtt_config.lwt_qos = 0;
+  mqtt_config.lwt_retain = runtime_config.retain_status != 0;
+  mqtt_config.user_context = this;
+  mqtt_config.event_handle = mqttEventHandler;
   // Let the URI parser choose ws/wss transport to avoid config conflicts.
-  if (strncmp(MQTT_URI, "wss://", 6) == 0) {
-    config.crt_bundle_attach = esp_crt_bundle_attach;
+  if (strncmp(runtime_config.uri, "wss://", 6) == 0) {
+    mqtt_config.crt_bundle_attach = esp_crt_bundle_attach;
   }
 
-  _mqtt_client = esp_mqtt_client_init(&config);
+  _mqtt_client = esp_mqtt_client_init(&mqtt_config);
   if (_mqtt_client == nullptr) {
     Serial.println("MQTT reporter: esp_mqtt_client_init failed");
     return false;
@@ -196,7 +223,7 @@ void MqttReporter::publishStatus(const char *status) {
   if (!_mqtt_connected || _mqtt_client == nullptr) return;
 
   String payload = buildStatusPayload(status);
-  esp_mqtt_client_publish(_mqtt_client, _status_topic, payload.c_str(), 0, 0, MQTT_RETAIN_STATUS != 0);
+  esp_mqtt_client_publish(_mqtt_client, _status_topic, payload.c_str(), 0, 0, _settings.config().retain_status != 0);
   _last_status_publish = millis();
 }
 
@@ -221,7 +248,7 @@ void MqttReporter::handleMqttEvent(esp_mqtt_event_handle_t event) {
 }
 
 bool MqttReporter::mqttNeedsTimeSync() const {
-  return strncmp(MQTT_URI, "wss://", 6) == 0;
+  return strncmp(_settings.config().uri, "wss://", 6) == 0;
 }
 
 String MqttReporter::buildIsoTimestamp() const {
@@ -266,16 +293,17 @@ String MqttReporter::buildRadioString() const {
 }
 
 String MqttReporter::buildStatusPayload(const char *status) const {
+  const MqttRuntimeConfig &config = _settings.config();
   String payload = "{";
   if (status != nullptr && status[0] != '\0') {
     payload += "\"status\":\"" + jsonEscape(status) + "\",";
   }
   payload += "\"origin\":\"" + jsonEscape(_mesh->getNodeName()) + "\"";
   payload += ",\"origin_id\":\"" + String(_origin_id) + "\"";
-  payload += ",\"model\":\"" + jsonEscape(MQTT_MODEL) + "\"";
+  payload += ",\"model\":\"" + jsonEscape(config.model) + "\"";
   payload += ",\"firmware_version\":\"" + jsonEscape(FIRMWARE_VERSION) + "\"";
   payload += ",\"radio\":\"" + jsonEscape(buildRadioString().c_str()) + "\"";
-  payload += ",\"client_version\":\"" + jsonEscape(MQTT_CLIENT_VERSION) + "\"";
+  payload += ",\"client_version\":\"" + jsonEscape(config.client_version) + "\"";
   payload += ",\"timestamp\":\"" + jsonEscape(buildIsoTimestamp().c_str()) + "\"";
   payload += "}";
   return payload;
@@ -326,6 +354,94 @@ String MqttReporter::buildPacketPayload(
 
   payload += "}";
   return payload;
+}
+
+const char *MqttReporter::getWiFiSsid() const {
+  return _settings.config().wifi_ssid;
+}
+
+bool MqttReporter::isWiFiConnected() const {
+  return WiFi.status() == WL_CONNECTED;
+}
+
+bool MqttReporter::isMqttConnected() const {
+  return _mqtt_connected;
+}
+
+bool MqttReporter::getConfigValue(const char *key, char *dest, size_t dest_size, bool mask_secret) const {
+  return _settings.getValue(key, dest, dest_size, mask_secret);
+}
+
+bool MqttReporter::setConfigValue(const char *key, const char *value) {
+  if (!_settings.setValue(key, value)) return false;
+  if (!_settings.save()) return false;
+  ensureIdentityStrings();
+  resetConnections();
+  return true;
+}
+
+bool MqttReporter::resetConfig() {
+  _settings.resetToDefaults();
+  if (!_settings.save()) return false;
+  ensureIdentityStrings();
+  resetConnections();
+  return true;
+}
+
+void MqttReporter::reconnect() {
+  ensureIdentityStrings();
+  resetConnections();
+}
+
+void MqttReporter::printConfig(Print &out) const {
+  char value[160];
+  char line[192];
+
+  out.println("MQTT config:");
+  if (getConfigValue("wifi.ssid", value, sizeof(value))) {
+    snprintf(line, sizeof(line), "wifi.ssid=%s", value);
+    out.println(line);
+  }
+  if (getConfigValue("wifi.pass", value, sizeof(value), true)) {
+    snprintf(line, sizeof(line), "wifi.pass=%s", value);
+    out.println(line);
+  }
+  if (getConfigValue("uri", value, sizeof(value))) {
+    snprintf(line, sizeof(line), "uri=%s", value);
+    out.println(line);
+  }
+  if (getConfigValue("username", value, sizeof(value))) {
+    snprintf(line, sizeof(line), "username=%s", value);
+    out.println(line);
+  }
+  if (getConfigValue("password", value, sizeof(value), true)) {
+    snprintf(line, sizeof(line), "password=%s", value);
+    out.println(line);
+  }
+  if (getConfigValue("topic.root", value, sizeof(value))) {
+    snprintf(line, sizeof(line), "topic.root=%s", value);
+    out.println(line);
+  }
+  if (getConfigValue("iata", value, sizeof(value))) {
+    snprintf(line, sizeof(line), "iata=%s", value);
+    out.println(line);
+  }
+  if (getConfigValue("model", value, sizeof(value))) {
+    snprintf(line, sizeof(line), "model=%s", value);
+    out.println(line);
+  }
+  if (getConfigValue("client.version", value, sizeof(value))) {
+    snprintf(line, sizeof(line), "client.version=%s", value);
+    out.println(line);
+  }
+  if (getConfigValue("retain.status", value, sizeof(value))) {
+    snprintf(line, sizeof(line), "retain.status=%s", value);
+    out.println(line);
+  }
+  snprintf(line, sizeof(line), "wifi.connected=%s", isWiFiConnected() ? "yes" : "no");
+  out.println(line);
+  snprintf(line, sizeof(line), "mqtt.connected=%s", isMqttConnected() ? "yes" : "no");
+  out.println(line);
 }
 
 esp_err_t MqttReporter::mqttEventHandler(esp_mqtt_event_handle_t event) {

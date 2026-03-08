@@ -90,7 +90,9 @@ void setup() {
   sensors.begin();
 
   the_mesh.begin(fs);
-
+#if defined(ESP32) && defined(WITH_MQTT_REPORTER)
+  mqtt_reporter.begin(fs);
+#endif
 #ifdef DISPLAY_CLASS
   ui_task.begin(the_mesh.getNodePrefs(), FIRMWARE_BUILD_DATE, FIRMWARE_VERSION);
 #endif
