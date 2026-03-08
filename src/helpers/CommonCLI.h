@@ -126,7 +126,8 @@ class CommonCLI {
 
   mesh::RTCClock* getRTCClock() { return _rtc; }
   void savePrefs();
-  void loadPrefsInt(FILESYSTEM* _fs, const char* filename);
+  bool loadPrefsInt(FILESYSTEM* _fs, const char* filename);
+  bool savePrefsInt(FILESYSTEM* _fs, const char* filename);
 
   void handleRegionCmd(char* command, char* reply);
   void handleGetCmd(uint32_t sender_timestamp, char* command, char* reply);
@@ -138,6 +139,6 @@ public:
 
   void loadPrefs(FILESYSTEM* _fs);
   void savePrefs(FILESYSTEM* _fs);
-  void handleCommand(uint32_t sender_timestamp, char* command, char* reply);
+  void handleCommand(uint32_t sender_timestamp, const char* command, char* reply);
   uint8_t buildAdvertData(uint8_t node_type, uint8_t* app_data);
 };
