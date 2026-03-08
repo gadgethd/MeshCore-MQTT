@@ -11,11 +11,22 @@ APP_BIN=""
 MERGED_BIN=""
 UPDATE_BIN=""
 FULL_BIN=""
+BOOTLOADER_BIN=""
+PARTITIONS_BIN=""
+BOOT_APP0_BIN=""
 TEMP_CONF=""
 WEBFLASHER_DIR=""
 WEBFLASHER_PREFIX=""
 WEBFLASHER_UPDATE_BIN=""
 WEBFLASHER_FULL_BIN=""
+WEBFLASHER_BOOTLOADER_BIN=""
+WEBFLASHER_PARTITIONS_BIN=""
+WEBFLASHER_BOOT_APP0_BIN=""
+WEBFLASHER_SITE_ROOT="${WEBFLASHER_SITE_ROOT:-${HOME}/MeshCore-MQTT-WebFlasher}"
+WEBFLASHER_SITE_FIRMWARE_DIR="${WEBFLASHER_SITE_ROOT}/firmware"
+WEBFLASHER_SITE_COMPOSE="${WEBFLASHER_SITE_ROOT}/compose.yml"
+WEBFLASHER_AUTO_DEPLOY="${WEBFLASHER_AUTO_DEPLOY:-1}"
+FLASH_SEGMENTS_JSON=""
 
 if [ -x "${LOCAL_PIO_VENV}/bin/pio" ]; then
   PIO_BIN="${LOCAL_PIO_VENV}/bin/pio"
@@ -69,6 +80,60 @@ PY
 
 sanitize_name() {
   printf '%s' "$1" | tr -c '[:alnum:]._+-' '-'
+}
+
+extract_flash_segments() {
+  python3 -c '
+import json
+import re
+import sys
+
+text = sys.stdin.read()
+segments = []
+for offset, path in re.findall(r"(0x[0-9a-fA-F]+)\s+(\S+\.bin)", text):
+    segments.append({"offset": offset.lower(), "path": path})
+
+required_names = {"bootloader.bin", "partitions.bin", "boot_app0.bin", "firmware.bin"}
+found_names = {segment["path"].rsplit("/", 1)[-1] for segment in segments}
+missing = sorted(required_names - found_names)
+if missing:
+    raise SystemExit(f"Missing merge_bin segments: {'"'"', '"'"'.join(missing)}")
+
+print(json.dumps(segments))
+'
+}
+
+sync_webflasher_site() {
+  if [ "${WEBFLASHER_AUTO_DEPLOY}" = "0" ]; then
+    return 0
+  fi
+
+  if [ ! -d "${WEBFLASHER_SITE_ROOT}" ]; then
+    echo "Skipping web flasher deploy: ${WEBFLASHER_SITE_ROOT} not found." >&2
+    return 0
+  fi
+
+  if ! command -v rsync >/dev/null 2>&1; then
+    echo "rsync is required to sync web flasher firmware output." >&2
+    return 1
+  fi
+
+  mkdir -p "${WEBFLASHER_SITE_FIRMWARE_DIR}"
+  rsync -a --delete "${REPO_ROOT}/webflasher/" "${WEBFLASHER_SITE_FIRMWARE_DIR}/"
+
+  if [ ! -f "${WEBFLASHER_SITE_COMPOSE}" ]; then
+    echo "Skipping web flasher rebuild: ${WEBFLASHER_SITE_COMPOSE} not found." >&2
+    return 0
+  fi
+
+  if ! command -v docker >/dev/null 2>&1; then
+    echo "docker is required to rebuild the web flasher container." >&2
+    return 1
+  fi
+
+  echo
+  echo "Rebuilding web flasher container..."
+  docker compose -f "${WEBFLASHER_SITE_COMPOSE}" up -d --build flasher-site
 }
 
 extract_firmware_version() {
@@ -181,6 +246,9 @@ fi
 WEBFLASHER_PREFIX="meshcore-mqtt-${FIRMWARE_VERSION_NAME}-${MESHCORE_MQTT_BASE_ENV}"
 WEBFLASHER_UPDATE_BIN="${WEBFLASHER_DIR}/${WEBFLASHER_PREFIX}-update.bin"
 WEBFLASHER_FULL_BIN="${WEBFLASHER_DIR}/${WEBFLASHER_PREFIX}-full.bin"
+WEBFLASHER_BOOTLOADER_BIN="${WEBFLASHER_DIR}/${WEBFLASHER_PREFIX}-bootloader.bin"
+WEBFLASHER_PARTITIONS_BIN="${WEBFLASHER_DIR}/${WEBFLASHER_PREFIX}-partitions.bin"
+WEBFLASHER_BOOT_APP0_BIN="${WEBFLASHER_DIR}/${WEBFLASHER_PREFIX}-boot_app0.bin"
 build_dynamic_env "${MESHCORE_MQTT_BASE_ENV}" "${BUILD_ENV}"
 
 echo
@@ -205,7 +273,14 @@ echo
 
 cd "${REPO_ROOT}"
 "${PIO_BIN}" run -c "${TEMP_CONF}" -e "${BUILD_ENV}" "$@"
-MERGED_BIN_PATH="${MERGED_BIN}" "${PIO_BIN}" run -c "${TEMP_CONF}" -e "${BUILD_ENV}" -t mergebin "$@"
+MERGE_OUTPUT=$(
+  MERGED_BIN_PATH="${MERGED_BIN}" "${PIO_BIN}" run -c "${TEMP_CONF}" -e "${BUILD_ENV}" -t mergebin "$@" 2>&1
+)
+printf '%s\n' "${MERGE_OUTPUT}"
+FLASH_SEGMENTS_JSON="$(printf '%s\n' "${MERGE_OUTPUT}" | extract_flash_segments)"
+BOOTLOADER_BIN="$(python3 -c 'import json,sys; segments=json.loads(sys.stdin.read()); print(next(segment["path"] for segment in segments if segment["path"].endswith("bootloader.bin")))' <<<"${FLASH_SEGMENTS_JSON}")"
+PARTITIONS_BIN="$(python3 -c 'import json,sys; segments=json.loads(sys.stdin.read()); print(next(segment["path"] for segment in segments if segment["path"].endswith("partitions.bin")))' <<<"${FLASH_SEGMENTS_JSON}")"
+BOOT_APP0_BIN="$(python3 -c 'import json,sys; segments=json.loads(sys.stdin.read()); print(next(segment["path"] for segment in segments if segment["path"].endswith("boot_app0.bin")))' <<<"${FLASH_SEGMENTS_JSON}")"
 cp -f "${APP_BIN}" "${UPDATE_BIN}"
 cp -f "${MERGED_BIN}" "${FULL_BIN}"
 
@@ -213,6 +288,9 @@ mkdir -p "${WEBFLASHER_DIR}"
 rm -f "${WEBFLASHER_DIR}"/*.bin "${WEBFLASHER_DIR}/manifest.json"
 cp -f "${UPDATE_BIN}" "${WEBFLASHER_UPDATE_BIN}"
 cp -f "${FULL_BIN}" "${WEBFLASHER_FULL_BIN}"
+cp -f "${BOOTLOADER_BIN}" "${WEBFLASHER_BOOTLOADER_BIN}"
+cp -f "${PARTITIONS_BIN}" "${WEBFLASHER_PARTITIONS_BIN}"
+cp -f "${BOOT_APP0_BIN}" "${WEBFLASHER_BOOT_APP0_BIN}"
 cat > "${WEBFLASHER_DIR}/manifest.json" <<EOF
 {
   "base_env": "${MESHCORE_MQTT_BASE_ENV}",
@@ -222,12 +300,47 @@ cat > "${WEBFLASHER_DIR}/manifest.json" <<EOF
   "built_at_utc": "$(date -u +"%Y-%m-%dT%H:%M:%SZ")",
   "artifacts": {
     "update": "$(basename "${WEBFLASHER_UPDATE_BIN}")",
-    "full": "$(basename "${WEBFLASHER_FULL_BIN}")"
+    "full": "$(basename "${WEBFLASHER_FULL_BIN}")",
+    "bootloader": "$(basename "${WEBFLASHER_BOOTLOADER_BIN}")",
+    "partitions": "$(basename "${WEBFLASHER_PARTITIONS_BIN}")",
+    "boot_app0": "$(basename "${WEBFLASHER_BOOT_APP0_BIN}")"
   },
   "flash_offsets": {
-    "update": "0x10000",
+    "bootloader": "$(python3 -c 'import json,sys; segments=json.loads(sys.stdin.read()); print(next(segment["offset"] for segment in segments if segment["path"].endswith("bootloader.bin")))' <<<"${FLASH_SEGMENTS_JSON}")",
+    "partitions": "$(python3 -c 'import json,sys; segments=json.loads(sys.stdin.read()); print(next(segment["offset"] for segment in segments if segment["path"].endswith("partitions.bin")))' <<<"${FLASH_SEGMENTS_JSON}")",
+    "boot_app0": "$(python3 -c 'import json,sys; segments=json.loads(sys.stdin.read()); print(next(segment["offset"] for segment in segments if segment["path"].endswith("boot_app0.bin")))' <<<"${FLASH_SEGMENTS_JSON}")",
+    "update": "$(python3 -c 'import json,sys; segments=json.loads(sys.stdin.read()); print(next(segment["offset"] for segment in segments if segment["path"].endswith("firmware.bin")))' <<<"${FLASH_SEGMENTS_JSON}")",
     "full": "0x00000"
-  }
+  },
+  "update_segments": [
+    {
+      "name": "bootloader",
+      "path": "$(basename "${WEBFLASHER_BOOTLOADER_BIN}")",
+      "offset": "$(python3 -c 'import json,sys; segments=json.loads(sys.stdin.read()); print(next(segment["offset"] for segment in segments if segment["path"].endswith("bootloader.bin")))' <<<"${FLASH_SEGMENTS_JSON}")"
+    },
+    {
+      "name": "partitions",
+      "path": "$(basename "${WEBFLASHER_PARTITIONS_BIN}")",
+      "offset": "$(python3 -c 'import json,sys; segments=json.loads(sys.stdin.read()); print(next(segment["offset"] for segment in segments if segment["path"].endswith("partitions.bin")))' <<<"${FLASH_SEGMENTS_JSON}")"
+    },
+    {
+      "name": "boot_app0",
+      "path": "$(basename "${WEBFLASHER_BOOT_APP0_BIN}")",
+      "offset": "$(python3 -c 'import json,sys; segments=json.loads(sys.stdin.read()); print(next(segment["offset"] for segment in segments if segment["path"].endswith("boot_app0.bin")))' <<<"${FLASH_SEGMENTS_JSON}")"
+    },
+    {
+      "name": "firmware",
+      "path": "$(basename "${WEBFLASHER_UPDATE_BIN}")",
+      "offset": "$(python3 -c 'import json,sys; segments=json.loads(sys.stdin.read()); print(next(segment["offset"] for segment in segments if segment["path"].endswith("firmware.bin")))' <<<"${FLASH_SEGMENTS_JSON}")"
+    }
+  ],
+  "full_segments": [
+    {
+      "name": "merged",
+      "path": "$(basename "${WEBFLASHER_FULL_BIN}")",
+      "offset": "0x00000"
+    }
+  ]
 }
 EOF
 
@@ -246,3 +359,8 @@ echo "Webflasher output:"
 echo "  ${WEBFLASHER_DIR}"
 echo "  $(basename "${WEBFLASHER_UPDATE_BIN}")"
 echo "  $(basename "${WEBFLASHER_FULL_BIN}")"
+echo "  $(basename "${WEBFLASHER_BOOTLOADER_BIN}")"
+echo "  $(basename "${WEBFLASHER_PARTITIONS_BIN}")"
+echo "  $(basename "${WEBFLASHER_BOOT_APP0_BIN}")"
+
+sync_webflasher_site
