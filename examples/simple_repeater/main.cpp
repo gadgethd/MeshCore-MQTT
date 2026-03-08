@@ -102,7 +102,7 @@ void setup() {
   the_mesh.begin(fs);
 
 #if defined(ESP32) && defined(WITH_MQTT_REPORTER)
-  mqtt_reporter.begin();
+  mqtt_reporter.begin(fs);
 #endif
 
 #ifdef DISPLAY_CLASS

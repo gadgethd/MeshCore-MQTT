@@ -1125,6 +1125,82 @@ void MyMesh::clearStats() {
   ((SimpleMeshTables *)getTables())->resetStats();
 }
 
+bool MyMesh::handleMqttCommand(uint32_t sender_timestamp, char *command, char *reply) {
+#if defined(ESP32) && defined(WITH_MQTT_REPORTER)
+  if (strcmp(command, "show mqtt") == 0 || strcmp(command, "get mqtt") == 0) {
+    if (sender_timestamp != 0) {
+      strcpy(reply, "Err - serial only");
+    } else {
+      mqtt_reporter.printConfig(Serial);
+      reply[0] = 0;
+    }
+    return true;
+  }
+
+  if (strcmp(command, "mqtt reconnect") == 0) {
+    if (sender_timestamp != 0) {
+      strcpy(reply, "Err - serial only");
+    } else {
+      mqtt_reporter.reconnect();
+      strcpy(reply, "OK");
+    }
+    return true;
+  }
+
+  if (strcmp(command, "mqtt reset") == 0) {
+    if (sender_timestamp != 0) {
+      strcpy(reply, "Err - serial only");
+    } else if (mqtt_reporter.resetConfig()) {
+      strcpy(reply, "OK");
+    } else {
+      strcpy(reply, "Err - save failed");
+    }
+    return true;
+  }
+
+  if (memcmp(command, "get mqtt.", 9) == 0) {
+    if (sender_timestamp != 0) {
+      strcpy(reply, "Err - serial only");
+      return true;
+    }
+
+    char value[160];
+    if (mqtt_reporter.getConfigValue(command + 9, value, sizeof(value))) {
+      snprintf(reply, 160, "> %s", value);
+    } else {
+      strcpy(reply, "Err - unknown mqtt key");
+    }
+    return true;
+  }
+
+  if (memcmp(command, "set mqtt.", 9) == 0) {
+    if (sender_timestamp != 0) {
+      strcpy(reply, "Err - serial only");
+      return true;
+    }
+
+    char *key = command + 9;
+    char *value = strchr(key, ' ');
+    if (value == NULL) {
+      strcpy(reply, "Err - bad params");
+      return true;
+    }
+
+    *value++ = 0;
+    while (*value == ' ') value++;
+
+    if (mqtt_reporter.setConfigValue(key, value)) {
+      strcpy(reply, "OK");
+    } else {
+      strcpy(reply, "Err - save failed");
+    }
+    return true;
+  }
+#endif
+
+  return false;
+}
+
 void MyMesh::handleCommand(uint32_t sender_timestamp, char *command, char *reply) {
   if (region_load_active) {
     if (StrHelper::isBlank(command)) {  // empty/blank line, signal to terminate 'load' operation
@@ -1312,6 +1388,8 @@ void MyMesh::handleCommand(uint32_t sender_timestamp, char *command, char *reply
       sendNodeDiscoverReq();
       strcpy(reply, "OK - Discover sent");
     }
+  } else if (handleMqttCommand(sender_timestamp, command, reply)) {
+    // already handled
   } else{
     _cli.handleCommand(sender_timestamp, command, reply);  // common CLI commands
   }

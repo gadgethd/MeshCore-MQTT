@@ -24,8 +24,10 @@ else
   exit 1
 fi
 
-if [ -z "${PLATFORMIO_CORE_DIR:-}" ] && { [ ! -d "${HOME}/.platformio" ] || [ ! -w "${HOME}/.platformio" ]; }; then
-  export PLATFORMIO_CORE_DIR=/tmp/pio-core
+if [ -z "${PLATFORMIO_CORE_DIR:-}" ]; then
+  if [ "${PIO_BIN}" = "${LOCAL_PIO_VENV}/bin/pio" ] || { [ ! -d "${HOME}/.platformio" ] || [ ! -w "${HOME}/.platformio" ]; }; then
+    export PLATFORMIO_CORE_DIR=/tmp/pio-core
+  fi
 fi
 
 cleanup() {
@@ -136,13 +138,13 @@ prompt_value() {
 prompt_value MESHCORE_MQTT_ADVERT_NAME "Observer name" "MeshCore MQTT"
 prompt_value MESHCORE_MQTT_ADMIN_PASSWORD "Admin password" "password"
 prompt_value MESHCORE_MQTT_BASE_ENV "Base ESP repeater env" "${MESHCORE_MQTT_BASE_ENV:-$BASE_ENV_DEFAULT}" 0 1
-prompt_value MESHCORE_MQTT_WIFI_SSID "WiFi SSID" "${MESHCORE_MQTT_WIFI_SSID:-}" 0 1
-prompt_value MESHCORE_MQTT_WIFI_PWD "WiFi password" "${MESHCORE_MQTT_WIFI_PWD:-}" 1 1
-prompt_value MESHCORE_MQTT_TOPIC_ROOT "MQTT topic root" "meshcore" 0 1
-prompt_value MESHCORE_MQTT_URI "MQTT WebSocket URI" "${MESHCORE_MQTT_URI:-}" 0 1
-prompt_value MESHCORE_MQTT_USERNAME "MQTT username" "${MESHCORE_MQTT_USERNAME:-}" 0 1
-prompt_value MESHCORE_MQTT_PASSWORD "MQTT password" "${MESHCORE_MQTT_PASSWORD:-}" 1 1
-prompt_value MESHCORE_MQTT_IATA "Observer IATA code" "${MESHCORE_MQTT_IATA:-}" 0 1
+prompt_value MESHCORE_MQTT_WIFI_SSID "WiFi SSID default" "${MESHCORE_MQTT_WIFI_SSID:-}"
+prompt_value MESHCORE_MQTT_WIFI_PWD "WiFi password default" "${MESHCORE_MQTT_WIFI_PWD:-}" 1
+prompt_value MESHCORE_MQTT_TOPIC_ROOT "MQTT topic root default" "meshcore"
+prompt_value MESHCORE_MQTT_URI "MQTT WebSocket URI default" "${MESHCORE_MQTT_URI:-}"
+prompt_value MESHCORE_MQTT_USERNAME "MQTT username default" "${MESHCORE_MQTT_USERNAME:-}"
+prompt_value MESHCORE_MQTT_PASSWORD "MQTT password default" "${MESHCORE_MQTT_PASSWORD:-}" 1
+prompt_value MESHCORE_MQTT_IATA "Observer IATA code default" "${MESHCORE_MQTT_IATA:-XXX}"
 prompt_value MESHCORE_MQTT_MODEL "Model label" "${MESHCORE_MQTT_MODEL:-$MESHCORE_MQTT_BASE_ENV}"
 prompt_value MESHCORE_MQTT_CLIENT_VERSION "Client version" "custom-mqtt-observer/1.0.0"
 
@@ -167,13 +169,13 @@ echo "Building ${BUILD_ENV} from ${MESHCORE_MQTT_BASE_ENV} with:"
 echo "  Observer name:    ${MESHCORE_MQTT_ADVERT_NAME}"
 echo "  Admin password:   ${MESHCORE_MQTT_ADMIN_PASSWORD}"
 echo "  Base env:         ${MESHCORE_MQTT_BASE_ENV}"
-echo "  WiFi SSID:        ${MESHCORE_MQTT_WIFI_SSID}"
-echo "  WiFi password:    ${MESHCORE_MQTT_WIFI_PWD}"
-echo "  MQTT topic root:  ${MESHCORE_MQTT_TOPIC_ROOT}"
-echo "  MQTT URI:         ${MESHCORE_MQTT_URI}"
-echo "  MQTT username:    ${MESHCORE_MQTT_USERNAME}"
-echo "  MQTT password:    ${MESHCORE_MQTT_PASSWORD}"
-echo "  Observer IATA:    ${MESHCORE_MQTT_IATA}"
+echo "  WiFi SSID:        ${MESHCORE_MQTT_WIFI_SSID:-<set later via serial>}"
+echo "  WiFi password:    ${MESHCORE_MQTT_WIFI_PWD:-<set later via serial>}"
+echo "  MQTT topic root:  ${MESHCORE_MQTT_TOPIC_ROOT:-meshcore}"
+echo "  MQTT URI:         ${MESHCORE_MQTT_URI:-<set later via serial>}"
+echo "  MQTT username:    ${MESHCORE_MQTT_USERNAME:-<set later via serial>}"
+echo "  MQTT password:    ${MESHCORE_MQTT_PASSWORD:-<set later via serial>}"
+echo "  Observer IATA:    ${MESHCORE_MQTT_IATA:-XXX}"
 echo "  Model label:      ${MESHCORE_MQTT_MODEL}"
 echo "  Client version:   ${MESHCORE_MQTT_CLIENT_VERSION}"
 echo "  LoRa radio:       configurable at runtime via MeshCore CLI (default: 869.525 MHz / BW 62.5 / SF8)"

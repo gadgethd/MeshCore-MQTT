@@ -2,10 +2,9 @@
 #include <Arduino.h>
 #include <helpers/CommonCLI.h>
 #if defined(ESP32) && defined(WITH_MQTT_REPORTER)
+  #include "MqttReporter.h"
   #include <WiFi.h>
-#ifndef WIFI_SSID
-  #define WIFI_SSID ""
-#endif
+  extern MqttReporter mqtt_reporter;
 #endif
 
 #ifndef AUTO_OFF_MILLIS
@@ -88,12 +87,12 @@ void UITask::renderCurrScreen() {
 #if defined(ESP32) && defined(WITH_MQTT_REPORTER)
     // configured WiFi SSID
     _display->setColor(DisplayDriver::LIGHT);
-    _display->drawTextEllipsized(0, 44, _display->width(), WIFI_SSID);
+    _display->drawTextEllipsized(0, 44, _display->width(), mqtt_reporter.getWiFiSsid());
 
     // live WiFi connection state
     _display->setCursor(0, 54);
-    _display->setColor(WiFi.status() == WL_CONNECTED ? DisplayDriver::GREEN : DisplayDriver::RED);
-    sprintf(tmp, "WiFi: %s", WiFi.status() == WL_CONNECTED ? "Connected" : "Disconnected");
+    _display->setColor(mqtt_reporter.isWiFiConnected() ? DisplayDriver::GREEN : DisplayDriver::RED);
+    sprintf(tmp, "WiFi: %s", mqtt_reporter.isWiFiConnected() ? "Connected" : "Disconnected");
     _display->print(tmp);
 #endif
   }
