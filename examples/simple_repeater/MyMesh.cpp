@@ -932,17 +932,6 @@ void MyMesh::begin(FILESYSTEM *fs) {
   // load persisted prefs
   _cli.loadPrefs(_fs);
 
-#if defined(WITH_MQTT_REPORTER) && defined(FORCE_BUILD_PREFS) && (FORCE_BUILD_PREFS == 1)
-  // Keep node identity and admin settings authoritative over any older saved prefs.
-  // LoRa radio settings are intentionally excluded so they can be changed at runtime
-  // via the USB CLI without being overwritten on every boot.
-  StrHelper::strncpy(_prefs.node_name, ADVERT_NAME, sizeof(_prefs.node_name));
-  _prefs.node_lat = ADVERT_LAT;
-  _prefs.node_lon = ADVERT_LON;
-  StrHelper::strncpy(_prefs.password, ADMIN_PASSWORD, sizeof(_prefs.password));
-  _cli.savePrefs(_fs);
-#endif
-
   acl.load(_fs, self_id);
   // TODO: key_store.begin();
   region_map.load(_fs);
