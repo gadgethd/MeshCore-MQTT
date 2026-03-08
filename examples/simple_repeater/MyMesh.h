@@ -181,6 +181,7 @@ public:
 
   void begin(FILESYSTEM* fs);
   void sendNodeDiscoverReq();
+  void seedIdentityDisplayName(const char* display_name);
   const char* getFirmwareVer() override { return FIRMWARE_VERSION; }
   const char* getBuildDate() override { return FIRMWARE_BUILD_DATE; }
   const char* getRole() override { return FIRMWARE_ROLE; }
@@ -189,9 +190,7 @@ public:
     return &_prefs;
   }
 
-  void savePrefs() override {
-    _cli.savePrefs(_fs);
-  }
+  void savePrefs() override;
 
   void sendFloodScoped(const TransportKey& scope, mesh::Packet* pkt, uint32_t delay_millis, uint8_t path_hash_size);
 
