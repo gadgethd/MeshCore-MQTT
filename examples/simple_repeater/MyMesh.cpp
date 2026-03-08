@@ -955,6 +955,23 @@ void MyMesh::begin(FILESYSTEM *fs) {
 #endif
 }
 
+void MyMesh::seedIdentityDisplayName(const char *display_name) {
+  if (display_name == nullptr || display_name[0] == '\0') return;
+  StrHelper::strncpy(_prefs.node_name, display_name, sizeof(_prefs.node_name));
+}
+
+void MyMesh::savePrefs() {
+  _cli.savePrefs(_fs);
+#if defined(NRF52_PLATFORM) || defined(STM32_PLATFORM)
+  IdentityStore store(*_fs, "");
+#elif defined(ESP32) || defined(RP2040_PLATFORM)
+  IdentityStore store(*_fs, "/identity");
+#else
+#error "need to define savePrefs()"
+#endif
+  store.save("_main", self_id, _prefs.node_name);
+}
+
 void MyMesh::applyTempRadioParams(float freq, float bw, uint8_t sf, uint8_t cr, int timeout_mins) {
   set_radio_at = futureMillis(2000); // give CLI reply some time to be sent back, before applying temp radio params
   pending_freq = freq;
@@ -1105,7 +1122,7 @@ void MyMesh::saveIdentity(const mesh::LocalIdentity &new_id) {
 #else
 #error "need to define saveIdentity()"
 #endif
-  store.save("_main", new_id);
+  store.save("_main", new_id, _prefs.node_name);
 }
 
 void MyMesh::clearStats() {

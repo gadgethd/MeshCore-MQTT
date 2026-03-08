@@ -66,6 +66,7 @@ void setup() {
   fast_rng.begin(radio_get_rng_seed());
 
   FILESYSTEM* fs;
+  char identity_display_name[32] = {0};
 #if defined(NRF52_PLATFORM) || defined(STM32_PLATFORM)
   InternalFS.begin();
   fs = &InternalFS;
@@ -82,14 +83,16 @@ void setup() {
 #else
   #error "need to define filesystem"
 #endif
-  if (!store.load("_main", the_mesh.self_id)) {
+  if (!store.load("_main", the_mesh.self_id, identity_display_name, sizeof(identity_display_name))) {
     MESH_DEBUG_PRINTLN("Generating new keypair");
     the_mesh.self_id = radio_new_identity();   // create new random identity
     int count = 0;
     while (count < 10 && (the_mesh.self_id.pub_key[0] == 0x00 || the_mesh.self_id.pub_key[0] == 0xFF)) {  // reserved id hashes
       the_mesh.self_id = radio_new_identity(); count++;
     }
-    store.save("_main", the_mesh.self_id);
+    store.save("_main", the_mesh.self_id, the_mesh.getNodeName());
+  } else {
+    the_mesh.seedIdentityDisplayName(identity_display_name);
   }
 
   Serial.print("Repeater ID: ");
