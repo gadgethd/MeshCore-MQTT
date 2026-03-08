@@ -12,6 +12,12 @@ MERGED_BIN=""
 UPDATE_BIN=""
 FULL_BIN=""
 TEMP_CONF=""
+WEBFLASHER_DIR=""
+WEBFLASHER_PREFIX=""
+WEBFLASHER_UPDATE_BIN=""
+WEBFLASHER_FULL_BIN=""
+WEBFLASHER_APP_BIN=""
+WEBFLASHER_MERGED_BIN=""
 
 if [ -x "${LOCAL_PIO_VENV}/bin/pio" ]; then
   PIO_BIN="${LOCAL_PIO_VENV}/bin/pio"
@@ -61,6 +67,14 @@ for ini_path in sorted((repo_root / "variants").glob("*/platformio.ini")):
         if repeater_re.search(env_name):
             print(env_name)
 PY
+}
+
+sanitize_name() {
+  printf '%s' "$1" | tr -c '[:alnum:]._-+' '-'
+}
+
+extract_firmware_version() {
+  sed -n 's/^  #define FIRMWARE_VERSION   "\(.*\)"/\1/p' "${REPO_ROOT}/examples/simple_repeater/MyMesh.h" | head -n 1
 }
 
 build_dynamic_env() {
@@ -162,6 +176,16 @@ APP_BIN="${BUILD_DIR}/firmware.bin"
 MERGED_BIN="${BUILD_DIR}/firmware-merged.bin"
 UPDATE_BIN="${BUILD_DIR}/firmware-update.bin"
 FULL_BIN="${BUILD_DIR}/firmware-full.bin"
+WEBFLASHER_DIR="${REPO_ROOT}/webflasher/${MESHCORE_MQTT_BASE_ENV}"
+FIRMWARE_VERSION_NAME="$(sanitize_name "$(extract_firmware_version)")"
+if [ -z "${FIRMWARE_VERSION_NAME}" ]; then
+  FIRMWARE_VERSION_NAME="unknown"
+fi
+WEBFLASHER_PREFIX="meshcore-mqtt-${FIRMWARE_VERSION_NAME}-${MESHCORE_MQTT_BASE_ENV}"
+WEBFLASHER_APP_BIN="${WEBFLASHER_DIR}/${WEBFLASHER_PREFIX}-app.bin"
+WEBFLASHER_UPDATE_BIN="${WEBFLASHER_DIR}/${WEBFLASHER_PREFIX}-update.bin"
+WEBFLASHER_MERGED_BIN="${WEBFLASHER_DIR}/${WEBFLASHER_PREFIX}-merged.bin"
+WEBFLASHER_FULL_BIN="${WEBFLASHER_DIR}/${WEBFLASHER_PREFIX}-full.bin"
 build_dynamic_env "${MESHCORE_MQTT_BASE_ENV}" "${BUILD_ENV}"
 
 echo
@@ -190,6 +214,32 @@ MERGED_BIN_PATH="${MERGED_BIN}" "${PIO_BIN}" run -c "${TEMP_CONF}" -e "${BUILD_E
 cp -f "${APP_BIN}" "${UPDATE_BIN}"
 cp -f "${MERGED_BIN}" "${FULL_BIN}"
 
+mkdir -p "${WEBFLASHER_DIR}"
+rm -f "${WEBFLASHER_DIR}"/*.bin "${WEBFLASHER_DIR}/manifest.json"
+cp -f "${APP_BIN}" "${WEBFLASHER_APP_BIN}"
+cp -f "${UPDATE_BIN}" "${WEBFLASHER_UPDATE_BIN}"
+cp -f "${MERGED_BIN}" "${WEBFLASHER_MERGED_BIN}"
+cp -f "${FULL_BIN}" "${WEBFLASHER_FULL_BIN}"
+cat > "${WEBFLASHER_DIR}/manifest.json" <<EOF
+{
+  "base_env": "${MESHCORE_MQTT_BASE_ENV}",
+  "build_env": "${BUILD_ENV}",
+  "firmware_name": "meshcore-mqtt",
+  "firmware_version": "${FIRMWARE_VERSION_NAME}",
+  "built_at_utc": "$(date -u +"%Y-%m-%dT%H:%M:%SZ")",
+  "artifacts": {
+    "app": "$(basename "${WEBFLASHER_APP_BIN}")",
+    "update": "$(basename "${WEBFLASHER_UPDATE_BIN}")",
+    "merged": "$(basename "${WEBFLASHER_MERGED_BIN}")",
+    "full": "$(basename "${WEBFLASHER_FULL_BIN}")"
+  },
+  "flash_offsets": {
+    "update": "0x10000",
+    "full": "0x00000"
+  }
+}
+EOF
+
 echo
 echo "Built firmware images:"
 echo "  App image: ${APP_BIN}"
@@ -200,3 +250,8 @@ echo
 echo "Flash usage:"
 echo "  Update/app image -> flash at 0x10000"
 echo "  Full flash image -> flash at 0x00000"
+echo
+echo "Webflasher output:"
+echo "  ${WEBFLASHER_DIR}"
+echo "  $(basename "${WEBFLASHER_UPDATE_BIN}")"
+echo "  $(basename "${WEBFLASHER_FULL_BIN}")"
