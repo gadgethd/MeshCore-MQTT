@@ -791,6 +791,7 @@ bool SensorMesh::formatFileSystem() {
 }
 
 void SensorMesh::saveIdentity(const mesh::LocalIdentity& new_id) {
+  self_id = new_id;
 #if defined(NRF52_PLATFORM) || defined(STM32_PLATFORM)
   IdentityStore store(*_fs, "");
 #elif defined(ESP32)
