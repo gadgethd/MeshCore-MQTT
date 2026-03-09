@@ -72,7 +72,13 @@ void setup() {
   fs = &InternalFS;
   IdentityStore store(InternalFS, "");
 #elif defined(ESP32)
-  SPIFFS.begin(true);
+  if (!SPIFFS.begin(true)) {
+    Serial.println("SPIFFS mount failed, formatting and retrying...");
+    if (!SPIFFS.format() || !SPIFFS.begin(false)) {
+      Serial.println("SPIFFS init failed after format");
+      halt();
+    }
+  }
   fs = &SPIFFS;
   IdentityStore store(SPIFFS, "/identity");
 #elif defined(RP2040_PLATFORM)
