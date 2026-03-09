@@ -28,11 +28,19 @@ static constexpr const char* LEGACY_PREFS_PATH = "/node_prefs";
 static constexpr size_t NODE_PREFS_BYTES = 290;
 
 void CommonCLI::loadPrefs(FILESYSTEM* fs) {
+  Serial.printf("[prefs] loadPrefs: exists(%s)=%d exists(%s)=%d\n",
+                PREFS_PATH, fs->exists(PREFS_PATH),
+                PREFS_BACKUP_PATH, fs->exists(PREFS_BACKUP_PATH));
+
   if (fs->exists(PREFS_PATH) && loadPrefsInt(fs, PREFS_PATH)) {
+    Serial.printf("[prefs] loaded from %s: name='%s' lat=%f lon=%f\n",
+                  PREFS_PATH, _prefs->node_name, _prefs->node_lat, _prefs->node_lon);
     return;
   }
 
   if (fs->exists(PREFS_BACKUP_PATH) && loadPrefsInt(fs, PREFS_BACKUP_PATH)) {
+    Serial.printf("[prefs] loaded from %s: name='%s' lat=%f lon=%f\n",
+                  PREFS_BACKUP_PATH, _prefs->node_name, _prefs->node_lat, _prefs->node_lon);
     savePrefsInt(fs, PREFS_PATH);
     return;
   }
@@ -40,7 +48,10 @@ void CommonCLI::loadPrefs(FILESYSTEM* fs) {
   if (fs->exists(LEGACY_PREFS_PATH) && loadPrefsInt(fs, LEGACY_PREFS_PATH)) {
     savePrefs(fs);  // save to new filename(s)
     fs->remove(LEGACY_PREFS_PATH);  // remove old
+    return;
   }
+
+  Serial.printf("[prefs] no prefs file found, using defaults: name='%s'\n", _prefs->node_name);
 }
 
 // Helper: pack all prefs fields into a flat buffer in the canonical file order.
@@ -157,8 +168,13 @@ bool CommonCLI::loadPrefsInt(FILESYSTEM* fs, const char* filename) {
 #else
   File file = fs->open(filename);
 #endif
-  if (!file) return false;
-  if (file.size() < NODE_PREFS_BYTES) {
+  if (!file) {
+    Serial.printf("[prefs] loadPrefsInt: failed to open '%s'\n", filename);
+    return false;
+  }
+  size_t fsize = file.size();
+  if (fsize < NODE_PREFS_BYTES) {
+    Serial.printf("[prefs] loadPrefsInt: '%s' too small: %u < %u\n", filename, (unsigned)fsize, (unsigned)NODE_PREFS_BYTES);
     file.close();
     return false;
   }
@@ -169,6 +185,7 @@ bool CommonCLI::loadPrefsInt(FILESYSTEM* fs, const char* filename) {
   file.close();
 
   if (bytes_read != NODE_PREFS_BYTES) {
+    Serial.printf("[prefs] loadPrefsInt: short read from '%s': %u / %u\n", filename, (unsigned)bytes_read, (unsigned)NODE_PREFS_BYTES);
     return false;
   }
 
@@ -217,13 +234,21 @@ bool CommonCLI::savePrefsInt(FILESYSTEM* fs, const char* filename) {
 #else
   File file = fs->open(filename, "w", true);
 #endif
-  if (!file) return false;
+  if (!file) {
+    Serial.printf("[prefs] savePrefsInt: failed to open '%s' for writing\n", filename);
+    return false;
+  }
 
   // Single bulk write — avoids partial-write issues with many small writes
   size_t bytes_written = file.write(buf, NODE_PREFS_BYTES);
   file.close();
 
-  return bytes_written == NODE_PREFS_BYTES;
+  bool ok = (bytes_written == NODE_PREFS_BYTES);
+  Serial.printf("[prefs] savePrefsInt: '%s' wrote %u/%u bytes, name='%s' lat=%f lon=%f %s\n",
+                filename, (unsigned)bytes_written, (unsigned)NODE_PREFS_BYTES,
+                _prefs->node_name, _prefs->node_lat, _prefs->node_lon,
+                ok ? "OK" : "FAILED");
+  return ok;
 }
 
 void CommonCLI::savePrefs(FILESYSTEM* fs) {
