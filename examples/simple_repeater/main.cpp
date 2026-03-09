@@ -89,6 +89,7 @@ void setup() {
 #else
   #error "need to define filesystem"
 #endif
+  Serial.printf("[boot] pre-identity name='%s'\n", the_mesh.getNodeName());
   if (!store.load("_main", the_mesh.self_id, identity_display_name, sizeof(identity_display_name))) {
     MESH_DEBUG_PRINTLN("Generating new keypair");
     the_mesh.self_id = radio_new_identity();   // create new random identity
@@ -97,8 +98,11 @@ void setup() {
       the_mesh.self_id = radio_new_identity(); count++;
     }
     store.save("_main", the_mesh.self_id, the_mesh.getNodeName());
+    Serial.printf("[boot] new identity, saved name='%s'\n", the_mesh.getNodeName());
   } else {
+    Serial.printf("[boot] identity loaded, display_name='%s'\n", identity_display_name);
     the_mesh.seedIdentityDisplayName(identity_display_name);
+    Serial.printf("[boot] after seedIdentityDisplayName name='%s'\n", the_mesh.getNodeName());
   }
 
   Serial.print("Repeater ID: ");
@@ -109,6 +113,8 @@ void setup() {
   sensors.begin();
 
   the_mesh.begin(fs);
+  Serial.printf("[boot] after begin() name='%s' lat=%f lon=%f\n",
+                the_mesh.getNodeName(), the_mesh.getNodePrefs()->node_lat, the_mesh.getNodePrefs()->node_lon);
 
 #if defined(ESP32) && defined(WITH_MQTT_REPORTER)
   mqtt_reporter.begin(fs);
