@@ -43,6 +43,114 @@ void CommonCLI::loadPrefs(FILESYSTEM* fs) {
   }
 }
 
+// Helper: pack all prefs fields into a flat buffer in the canonical file order.
+// Returns NODE_PREFS_BYTES on success.
+static size_t packPrefs(uint8_t* buf, const NodePrefs* p) {
+  uint8_t* w = buf;
+  uint8_t pad[8];
+  memset(pad, 0, sizeof(pad));
+
+  #define WR(src, n) do { memcpy(w, (src), (n)); w += (n); } while(0)
+  WR(&p->airtime_factor, sizeof(p->airtime_factor));              // 0
+  WR(p->node_name, sizeof(p->node_name));                         // 4
+  WR(pad, 4);                                                     // 36
+  WR(&p->node_lat, sizeof(p->node_lat));                          // 40
+  WR(&p->node_lon, sizeof(p->node_lon));                          // 48
+  WR(p->password, sizeof(p->password));                           // 56
+  WR(&p->freq, sizeof(p->freq));                                  // 72
+  WR(&p->tx_power_dbm, sizeof(p->tx_power_dbm));                 // 76
+  WR(&p->disable_fwd, sizeof(p->disable_fwd));                   // 77
+  WR(&p->advert_interval, sizeof(p->advert_interval));           // 78
+  WR(pad, 1);                                                     // 79
+  WR(&p->rx_delay_base, sizeof(p->rx_delay_base));               // 80
+  WR(&p->tx_delay_factor, sizeof(p->tx_delay_factor));           // 84
+  WR(p->guest_password, sizeof(p->guest_password));               // 88
+  WR(&p->direct_tx_delay_factor, sizeof(p->direct_tx_delay_factor)); // 104
+  WR(pad, 4);                                                     // 108
+  WR(&p->sf, sizeof(p->sf));                                      // 112
+  WR(&p->cr, sizeof(p->cr));                                      // 113
+  WR(&p->allow_read_only, sizeof(p->allow_read_only));           // 114
+  WR(&p->multi_acks, sizeof(p->multi_acks));                     // 115
+  WR(&p->bw, sizeof(p->bw));                                      // 116
+  WR(&p->agc_reset_interval, sizeof(p->agc_reset_interval));     // 120
+  WR(&p->path_hash_mode, sizeof(p->path_hash_mode));             // 121
+  WR(&p->loop_detect, sizeof(p->loop_detect));                   // 122
+  WR(pad, 1);                                                     // 123
+  WR(&p->flood_max, sizeof(p->flood_max));                       // 124
+  WR(&p->flood_advert_interval, sizeof(p->flood_advert_interval)); // 125
+  WR(&p->interference_threshold, sizeof(p->interference_threshold)); // 126
+  WR(&p->bridge_enabled, sizeof(p->bridge_enabled));             // 127
+  WR(&p->bridge_delay, sizeof(p->bridge_delay));                 // 128
+  WR(&p->bridge_pkt_src, sizeof(p->bridge_pkt_src));             // 130
+  WR(&p->bridge_baud, sizeof(p->bridge_baud));                   // 131
+  WR(&p->bridge_channel, sizeof(p->bridge_channel));             // 135
+  WR(p->bridge_secret, sizeof(p->bridge_secret));                // 136
+  WR(&p->powersaving_enabled, sizeof(p->powersaving_enabled));   // 152
+  WR(pad, 3);                                                     // 153
+  WR(&p->gps_enabled, sizeof(p->gps_enabled));                   // 156
+  WR(&p->gps_interval, sizeof(p->gps_interval));                 // 157
+  WR(&p->advert_loc_policy, sizeof(p->advert_loc_policy));       // 161
+  WR(&p->discovery_mod_timestamp, sizeof(p->discovery_mod_timestamp)); // 162
+  WR(&p->adc_multiplier, sizeof(p->adc_multiplier));             // 166
+  WR(p->owner_info, sizeof(p->owner_info));                      // 170
+  // 290
+  #undef WR
+
+  return (size_t)(w - buf);
+}
+
+// Helper: unpack a flat buffer into prefs fields (inverse of packPrefs).
+static void unpackPrefs(const uint8_t* buf, NodePrefs* p) {
+  const uint8_t* r = buf;
+  uint8_t pad[8];
+
+  #define RD(dst, n) do { memcpy((dst), r, (n)); r += (n); } while(0)
+  RD(&p->airtime_factor, sizeof(p->airtime_factor));              // 0
+  RD(p->node_name, sizeof(p->node_name));                         // 4
+  RD(pad, 4);                                                     // 36
+  RD(&p->node_lat, sizeof(p->node_lat));                          // 40
+  RD(&p->node_lon, sizeof(p->node_lon));                          // 48
+  RD(p->password, sizeof(p->password));                           // 56
+  RD(&p->freq, sizeof(p->freq));                                  // 72
+  RD(&p->tx_power_dbm, sizeof(p->tx_power_dbm));                 // 76
+  RD(&p->disable_fwd, sizeof(p->disable_fwd));                   // 77
+  RD(&p->advert_interval, sizeof(p->advert_interval));           // 78
+  RD(pad, 1);                                                     // 79
+  RD(&p->rx_delay_base, sizeof(p->rx_delay_base));               // 80
+  RD(&p->tx_delay_factor, sizeof(p->tx_delay_factor));           // 84
+  RD(p->guest_password, sizeof(p->guest_password));               // 88
+  RD(&p->direct_tx_delay_factor, sizeof(p->direct_tx_delay_factor)); // 104
+  RD(pad, 4);                                                     // 108
+  RD(&p->sf, sizeof(p->sf));                                      // 112
+  RD(&p->cr, sizeof(p->cr));                                      // 113
+  RD(&p->allow_read_only, sizeof(p->allow_read_only));           // 114
+  RD(&p->multi_acks, sizeof(p->multi_acks));                     // 115
+  RD(&p->bw, sizeof(p->bw));                                      // 116
+  RD(&p->agc_reset_interval, sizeof(p->agc_reset_interval));     // 120
+  RD(&p->path_hash_mode, sizeof(p->path_hash_mode));             // 121
+  RD(&p->loop_detect, sizeof(p->loop_detect));                   // 122
+  RD(pad, 1);                                                     // 123
+  RD(&p->flood_max, sizeof(p->flood_max));                       // 124
+  RD(&p->flood_advert_interval, sizeof(p->flood_advert_interval)); // 125
+  RD(&p->interference_threshold, sizeof(p->interference_threshold)); // 126
+  RD(&p->bridge_enabled, sizeof(p->bridge_enabled));             // 127
+  RD(&p->bridge_delay, sizeof(p->bridge_delay));                 // 128
+  RD(&p->bridge_pkt_src, sizeof(p->bridge_pkt_src));             // 130
+  RD(&p->bridge_baud, sizeof(p->bridge_baud));                   // 131
+  RD(&p->bridge_channel, sizeof(p->bridge_channel));             // 135
+  RD(p->bridge_secret, sizeof(p->bridge_secret));                // 136
+  RD(&p->powersaving_enabled, sizeof(p->powersaving_enabled));   // 152
+  RD(pad, 3);                                                     // 153
+  RD(&p->gps_enabled, sizeof(p->gps_enabled));                   // 156
+  RD(&p->gps_interval, sizeof(p->gps_interval));                 // 157
+  RD(&p->advert_loc_policy, sizeof(p->advert_loc_policy));       // 161
+  RD(&p->discovery_mod_timestamp, sizeof(p->discovery_mod_timestamp)); // 162
+  RD(&p->adc_multiplier, sizeof(p->adc_multiplier));             // 166
+  RD(p->owner_info, sizeof(p->owner_info));                      // 170
+  // 290
+  #undef RD
+}
+
 bool CommonCLI::loadPrefsInt(FILESYSTEM* fs, const char* filename) {
 #if defined(RP2040_PLATFORM)
   File file = fs->open(filename, "r");
@@ -55,51 +163,16 @@ bool CommonCLI::loadPrefsInt(FILESYSTEM* fs, const char* filename) {
     return false;
   }
 
-  uint8_t pad[8];
+  // Single bulk read — matches the single bulk write in savePrefsInt
+  uint8_t buf[NODE_PREFS_BYTES];
+  size_t bytes_read = file.read(buf, NODE_PREFS_BYTES);
+  file.close();
 
-  file.read((uint8_t *)&_prefs->airtime_factor, sizeof(_prefs->airtime_factor));    // 0
-  file.read((uint8_t *)&_prefs->node_name, sizeof(_prefs->node_name));              // 4
-  file.read(pad, 4);                                                                // 36
-  file.read((uint8_t *)&_prefs->node_lat, sizeof(_prefs->node_lat));                // 40
-  file.read((uint8_t *)&_prefs->node_lon, sizeof(_prefs->node_lon));                // 48
-  file.read((uint8_t *)&_prefs->password[0], sizeof(_prefs->password));             // 56
-  file.read((uint8_t *)&_prefs->freq, sizeof(_prefs->freq));                        // 72
-  file.read((uint8_t *)&_prefs->tx_power_dbm, sizeof(_prefs->tx_power_dbm));        // 76
-  file.read((uint8_t *)&_prefs->disable_fwd, sizeof(_prefs->disable_fwd));          // 77
-  file.read((uint8_t *)&_prefs->advert_interval, sizeof(_prefs->advert_interval));  // 78
-  file.read((uint8_t *)pad, 1);                                                     // 79  was 'unused'
-  file.read((uint8_t *)&_prefs->rx_delay_base, sizeof(_prefs->rx_delay_base));      // 80
-  file.read((uint8_t *)&_prefs->tx_delay_factor, sizeof(_prefs->tx_delay_factor));  // 84
-  file.read((uint8_t *)&_prefs->guest_password[0], sizeof(_prefs->guest_password)); // 88
-  file.read((uint8_t *)&_prefs->direct_tx_delay_factor, sizeof(_prefs->direct_tx_delay_factor)); // 104
-  file.read(pad, 4);                                                                             // 108
-  file.read((uint8_t *)&_prefs->sf, sizeof(_prefs->sf));                                         // 112
-  file.read((uint8_t *)&_prefs->cr, sizeof(_prefs->cr));                                         // 113
-  file.read((uint8_t *)&_prefs->allow_read_only, sizeof(_prefs->allow_read_only));               // 114
-  file.read((uint8_t *)&_prefs->multi_acks, sizeof(_prefs->multi_acks));                         // 115
-  file.read((uint8_t *)&_prefs->bw, sizeof(_prefs->bw));                                         // 116
-  file.read((uint8_t *)&_prefs->agc_reset_interval, sizeof(_prefs->agc_reset_interval));         // 120
-  file.read((uint8_t *)&_prefs->path_hash_mode, sizeof(_prefs->path_hash_mode));                 // 121
-  file.read((uint8_t *)&_prefs->loop_detect, sizeof(_prefs->loop_detect));                       // 122
-  file.read(pad, 1);                                                                             // 123
-  file.read((uint8_t *)&_prefs->flood_max, sizeof(_prefs->flood_max));                           // 124
-  file.read((uint8_t *)&_prefs->flood_advert_interval, sizeof(_prefs->flood_advert_interval));   // 125
-  file.read((uint8_t *)&_prefs->interference_threshold, sizeof(_prefs->interference_threshold)); // 126
-  file.read((uint8_t *)&_prefs->bridge_enabled, sizeof(_prefs->bridge_enabled));                 // 127
-  file.read((uint8_t *)&_prefs->bridge_delay, sizeof(_prefs->bridge_delay));                     // 128
-  file.read((uint8_t *)&_prefs->bridge_pkt_src, sizeof(_prefs->bridge_pkt_src));                 // 130
-  file.read((uint8_t *)&_prefs->bridge_baud, sizeof(_prefs->bridge_baud));                       // 131
-  file.read((uint8_t *)&_prefs->bridge_channel, sizeof(_prefs->bridge_channel));                 // 135
-  file.read((uint8_t *)&_prefs->bridge_secret, sizeof(_prefs->bridge_secret));                   // 136
-  file.read((uint8_t *)&_prefs->powersaving_enabled, sizeof(_prefs->powersaving_enabled));       // 152
-  file.read(pad, 3);                                                                             // 153
-  file.read((uint8_t *)&_prefs->gps_enabled, sizeof(_prefs->gps_enabled));                       // 156
-  file.read((uint8_t *)&_prefs->gps_interval, sizeof(_prefs->gps_interval));                     // 157
-  file.read((uint8_t *)&_prefs->advert_loc_policy, sizeof (_prefs->advert_loc_policy));          // 161
-  file.read((uint8_t *)&_prefs->discovery_mod_timestamp, sizeof(_prefs->discovery_mod_timestamp)); // 162
-  file.read((uint8_t *)&_prefs->adc_multiplier, sizeof(_prefs->adc_multiplier)); // 166
-  file.read((uint8_t *)_prefs->owner_info, sizeof(_prefs->owner_info));  // 170
-  // 290
+  if (bytes_read != NODE_PREFS_BYTES) {
+    return false;
+  }
+
+  unpackPrefs(buf, _prefs);
 
   // sanitise bad pref values
   _prefs->rx_delay_base = constrain(_prefs->rx_delay_base, 0, 20.0f);
@@ -127,11 +200,15 @@ bool CommonCLI::loadPrefsInt(FILESYSTEM* fs, const char* filename) {
   _prefs->gps_enabled = constrain(_prefs->gps_enabled, 0, 1);
   _prefs->advert_loc_policy = constrain(_prefs->advert_loc_policy, 0, 2);
 
-  file.close();
   return true;
 }
 
 bool CommonCLI::savePrefsInt(FILESYSTEM* fs, const char* filename) {
+  // Pack all fields into a contiguous buffer first
+  uint8_t buf[NODE_PREFS_BYTES];
+  size_t packed = packPrefs(buf, _prefs);
+  if (packed != NODE_PREFS_BYTES) return false;  // should never happen
+
 #if defined(NRF52_PLATFORM) || defined(STM32_PLATFORM)
   fs->remove(filename);
   File file = fs->open(filename, FILE_O_WRITE);
@@ -142,55 +219,11 @@ bool CommonCLI::savePrefsInt(FILESYSTEM* fs, const char* filename) {
 #endif
   if (!file) return false;
 
-  uint8_t pad[8];
-  memset(pad, 0, sizeof(pad));
-
-  file.write((uint8_t *)&_prefs->airtime_factor, sizeof(_prefs->airtime_factor));    // 0
-  file.write((uint8_t *)&_prefs->node_name, sizeof(_prefs->node_name));              // 4
-  file.write(pad, 4);                                                                // 36
-  file.write((uint8_t *)&_prefs->node_lat, sizeof(_prefs->node_lat));                // 40
-  file.write((uint8_t *)&_prefs->node_lon, sizeof(_prefs->node_lon));                // 48
-  file.write((uint8_t *)&_prefs->password[0], sizeof(_prefs->password));             // 56
-  file.write((uint8_t *)&_prefs->freq, sizeof(_prefs->freq));                        // 72
-  file.write((uint8_t *)&_prefs->tx_power_dbm, sizeof(_prefs->tx_power_dbm));        // 76
-  file.write((uint8_t *)&_prefs->disable_fwd, sizeof(_prefs->disable_fwd));          // 77
-  file.write((uint8_t *)&_prefs->advert_interval, sizeof(_prefs->advert_interval));  // 78
-  file.write((uint8_t *)pad, 1);                                                     // 79  was 'unused'
-  file.write((uint8_t *)&_prefs->rx_delay_base, sizeof(_prefs->rx_delay_base));      // 80
-  file.write((uint8_t *)&_prefs->tx_delay_factor, sizeof(_prefs->tx_delay_factor));  // 84
-  file.write((uint8_t *)&_prefs->guest_password[0], sizeof(_prefs->guest_password)); // 88
-  file.write((uint8_t *)&_prefs->direct_tx_delay_factor, sizeof(_prefs->direct_tx_delay_factor)); // 104
-  file.write(pad, 4);                                                                             // 108
-  file.write((uint8_t *)&_prefs->sf, sizeof(_prefs->sf));                                         // 112
-  file.write((uint8_t *)&_prefs->cr, sizeof(_prefs->cr));                                         // 113
-  file.write((uint8_t *)&_prefs->allow_read_only, sizeof(_prefs->allow_read_only));               // 114
-  file.write((uint8_t *)&_prefs->multi_acks, sizeof(_prefs->multi_acks));                         // 115
-  file.write((uint8_t *)&_prefs->bw, sizeof(_prefs->bw));                                         // 116
-  file.write((uint8_t *)&_prefs->agc_reset_interval, sizeof(_prefs->agc_reset_interval));         // 120
-  file.write((uint8_t *)&_prefs->path_hash_mode, sizeof(_prefs->path_hash_mode));                 // 121
-  file.write((uint8_t *)&_prefs->loop_detect, sizeof(_prefs->loop_detect));                       // 122
-  file.write(pad, 1);                                                                             // 123
-  file.write((uint8_t *)&_prefs->flood_max, sizeof(_prefs->flood_max));                           // 124
-  file.write((uint8_t *)&_prefs->flood_advert_interval, sizeof(_prefs->flood_advert_interval));   // 125
-  file.write((uint8_t *)&_prefs->interference_threshold, sizeof(_prefs->interference_threshold)); // 126
-  file.write((uint8_t *)&_prefs->bridge_enabled, sizeof(_prefs->bridge_enabled));                 // 127
-  file.write((uint8_t *)&_prefs->bridge_delay, sizeof(_prefs->bridge_delay));                     // 128
-  file.write((uint8_t *)&_prefs->bridge_pkt_src, sizeof(_prefs->bridge_pkt_src));                 // 130
-  file.write((uint8_t *)&_prefs->bridge_baud, sizeof(_prefs->bridge_baud));                       // 131
-  file.write((uint8_t *)&_prefs->bridge_channel, sizeof(_prefs->bridge_channel));                 // 135
-  file.write((uint8_t *)&_prefs->bridge_secret, sizeof(_prefs->bridge_secret));                   // 136
-  file.write((uint8_t *)&_prefs->powersaving_enabled, sizeof(_prefs->powersaving_enabled));       // 152
-  file.write(pad, 3);                                                                             // 153
-  file.write((uint8_t *)&_prefs->gps_enabled, sizeof(_prefs->gps_enabled));                       // 156
-  file.write((uint8_t *)&_prefs->gps_interval, sizeof(_prefs->gps_interval));                     // 157
-  file.write((uint8_t *)&_prefs->advert_loc_policy, sizeof(_prefs->advert_loc_policy));           // 161
-  file.write((uint8_t *)&_prefs->discovery_mod_timestamp, sizeof(_prefs->discovery_mod_timestamp)); // 162
-  file.write((uint8_t *)&_prefs->adc_multiplier, sizeof(_prefs->adc_multiplier));                 // 166
-  file.write((uint8_t *)_prefs->owner_info, sizeof(_prefs->owner_info));  // 170
-  // 290
-
+  // Single bulk write — avoids partial-write issues with many small writes
+  size_t bytes_written = file.write(buf, NODE_PREFS_BYTES);
   file.close();
-  return true;
+
+  return bytes_written == NODE_PREFS_BYTES;
 }
 
 void CommonCLI::savePrefs(FILESYSTEM* fs) {
