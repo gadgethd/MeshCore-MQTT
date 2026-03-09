@@ -376,7 +376,6 @@ bool MqttReporter::setConfigValue(const char *key, const char *value) {
   if (!_settings.setValue(key, value)) return false;
   if (!_settings.save()) return false;
   ensureIdentityStrings();
-  resetConnections();
   return true;
 }
 
