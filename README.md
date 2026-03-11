@@ -7,8 +7,16 @@ What was added in this fork:
 * Direct MQTT observer support for ESP repeater builds
 * Secure WebSocket MQTT publishing from the device itself
 * MeshCore-compatible `status` and `packets` topics
+* Up to 5 outbound MQTT brokers per device
 * A generic interactive build script for supported ESP repeater targets
 * A build sweep script for checking which ESP repeater targets compile
+
+Multi-broker MQTT behavior:
+
+* Devices can publish the same `status` and `packets` feed to up to 5 brokers at once
+* Existing single-broker installs migrate automatically to `broker1`
+* The old `mqtt.uri`, `mqtt.username`, and `mqtt.password` settings still work and map to `broker1`
+* Additional brokers use `mqtt.broker2...mqtt.broker5` keys at runtime
 
 How to build a firmware:
 
