@@ -16,7 +16,13 @@ Multi-broker MQTT behavior:
 * Devices can publish the same `status` and `packets` feed to up to 5 brokers at once
 * Existing single-broker installs migrate automatically to `broker1`
 * The old `mqtt.uri`, `mqtt.username`, and `mqtt.password` settings still work and map to `broker1`
-* Additional brokers use `mqtt.broker2...mqtt.broker5` keys at runtime
+* Broker-specific metadata can also be set per target broker:
+  * `mqtt.brokerN.topic.root`
+  * `mqtt.brokerN.iata`
+  * `mqtt.brokerN.model`
+  * `mqtt.brokerN.client.version`
+  * `mqtt.brokerN.retain.status`
+* The old shared keys `mqtt.topic.root`, `mqtt.iata`, `mqtt.model`, `mqtt.client.version`, and `mqtt.retain.status` still work and map to `broker1`
 
 How to build a firmware:
 

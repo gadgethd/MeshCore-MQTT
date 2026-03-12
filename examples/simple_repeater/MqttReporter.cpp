@@ -104,9 +104,9 @@ void MqttReporter::publishRxPacket(mesh::Packet *pkt, int len, float score, int 
   if (pkt == nullptr) return;
 
   String raw_hex = _last_rx_raw.length() ? _last_rx_raw : bytesToHex(pkt->payload, pkt->payload_len);
-  String payload = buildPacketPayload("rx", pkt, len, raw_hex, score, rssi, snr, duration_ms, true);
   for (int i = 0; i < MQTT_MAX_BROKERS; ++i) {
     if (!_mqtt_connected[i] || _mqtt_clients[i] == nullptr) continue;
+    String payload = buildPacketPayload(i, "rx", pkt, len, raw_hex, score, rssi, snr, duration_ms, true);
     esp_mqtt_client_publish(_mqtt_clients[i], _packets_topics[i], payload.c_str(), 0, 0, 0);
   }
 }
@@ -116,9 +116,9 @@ void MqttReporter::publishTxPacket(mesh::Packet *pkt, int len) {
 
   uint8_t raw[MAX_TRANS_UNIT];
   int raw_len = pkt->writeTo(raw);
-  String payload = buildPacketPayload("tx", pkt, len, bytesToHex(raw, raw_len), 0.0f, 0, 0.0f, 0, false);
   for (int i = 0; i < MQTT_MAX_BROKERS; ++i) {
     if (!_mqtt_connected[i] || _mqtt_clients[i] == nullptr) continue;
+    String payload = buildPacketPayload(i, "tx", pkt, len, bytesToHex(raw, raw_len), 0.0f, 0, 0.0f, 0, false);
     esp_mqtt_client_publish(_mqtt_clients[i], _packets_topics[i], payload.c_str(), 0, 0, 0);
   }
 }
@@ -135,9 +135,21 @@ void MqttReporter::ensureIdentityStrings() {
   const MqttRuntimeConfig &config = _settings.config();
   for (int i = 0; i < MQTT_MAX_BROKERS; ++i) {
     snprintf(_client_ids[i], sizeof(_client_ids[i]), "meshcore_%.*s_%d", 16, _origin_id, i + 1);
-    snprintf(_status_topics[i], sizeof(_status_topics[i]), "%s/%s/%s/status", config.topic_root, config.iata, _origin_id);
-    snprintf(_packets_topics[i], sizeof(_packets_topics[i]), "%s/%s/%s/packets", config.topic_root, config.iata, _origin_id);
-    _offline_payloads[i] = buildStatusPayload("offline");
+    snprintf(
+        _status_topics[i],
+        sizeof(_status_topics[i]),
+        "%s/%s/%s/status",
+        config.brokers[i].topic_root,
+        config.brokers[i].iata,
+        _origin_id);
+    snprintf(
+        _packets_topics[i],
+        sizeof(_packets_topics[i]),
+        "%s/%s/%s/packets",
+        config.brokers[i].topic_root,
+        config.brokers[i].iata,
+        _origin_id);
+    _offline_payloads[i] = buildStatusPayload(i, "offline");
   }
 }
 
@@ -211,7 +223,7 @@ bool MqttReporter::connectMQTT(uint8_t broker_index) {
   mqtt_config.lwt_topic = _status_topics[broker_index];
   mqtt_config.lwt_msg = _offline_payloads[broker_index].c_str();
   mqtt_config.lwt_qos = 0;
-  mqtt_config.lwt_retain = runtime_config.retain_status != 0;
+  mqtt_config.lwt_retain = runtime_config.brokers[broker_index].retain_status != 0;
   mqtt_config.user_context = &_broker_contexts[broker_index];
   mqtt_config.event_handle = mqttEventHandler;
   if (strncmp(broker.uri, "wss://", 6) == 0) {
@@ -266,14 +278,14 @@ void MqttReporter::publishStatusForBroker(uint8_t broker_index, const char *stat
   if (broker_index >= MQTT_MAX_BROKERS) return;
   if (!_mqtt_connected[broker_index] || _mqtt_clients[broker_index] == nullptr) return;
 
-  String payload = buildStatusPayload(status);
+  String payload = buildStatusPayload(broker_index, status);
   esp_mqtt_client_publish(
       _mqtt_clients[broker_index],
       _status_topics[broker_index],
       payload.c_str(),
       0,
       0,
-      _settings.config().retain_status != 0);
+      _settings.config().brokers[broker_index].retain_status != 0);
 }
 
 void MqttReporter::handleMqttEvent(uint8_t broker_index, esp_mqtt_event_handle_t event) {
@@ -353,24 +365,27 @@ String MqttReporter::buildRadioString() const {
   return String(radio_buf);
 }
 
-String MqttReporter::buildStatusPayload(const char *status) const {
+String MqttReporter::buildStatusPayload(uint8_t broker_index, const char *status) const {
   const MqttRuntimeConfig &config = _settings.config();
+  if (broker_index >= MQTT_MAX_BROKERS) broker_index = 0;
+  const MqttBrokerRuntimeConfig &broker = config.brokers[broker_index];
   String payload = "{";
   if (status != nullptr && status[0] != '\0') {
     payload += "\"status\":\"" + jsonEscape(status) + "\",";
   }
   payload += "\"origin\":\"" + jsonEscape(_mesh->getNodeName()) + "\"";
   payload += ",\"origin_id\":\"" + String(_origin_id) + "\"";
-  payload += ",\"model\":\"" + jsonEscape(config.model) + "\"";
+  payload += ",\"model\":\"" + jsonEscape(broker.model) + "\"";
   payload += ",\"firmware_version\":\"" + jsonEscape(FIRMWARE_VERSION) + "\"";
   payload += ",\"radio\":\"" + jsonEscape(buildRadioString().c_str()) + "\"";
-  payload += ",\"client_version\":\"" + jsonEscape(config.client_version) + "\"";
+  payload += ",\"client_version\":\"" + jsonEscape(broker.client_version) + "\"";
   payload += ",\"timestamp\":\"" + jsonEscape(buildIsoTimestamp().c_str()) + "\"";
   payload += "}";
   return payload;
 }
 
 String MqttReporter::buildPacketPayload(
+    uint8_t broker_index,
     const char *direction,
     mesh::Packet *pkt,
     int len,
@@ -379,7 +394,8 @@ String MqttReporter::buildPacketPayload(
     int rssi,
     float snr,
     uint32_t duration_ms,
-    bool include_radio_metrics) const {
+      bool include_radio_metrics) const {
+  (void)broker_index;
   uint8_t packet_hash[MAX_HASH_SIZE];
   pkt->calculatePacketHash(packet_hash);
   String hash_hex = bytesToHex(packet_hash, MAX_HASH_SIZE);
@@ -508,6 +524,10 @@ void MqttReporter::printConfig(Print &out) const {
       snprintf(line, sizeof(line), "%s.enabled=%s", prefix.c_str(), value);
       out.println(line);
     }
+    if (getConfigValue((prefix + ".topic.root").c_str(), value, sizeof(value))) {
+      snprintf(line, sizeof(line), "%s.topic.root=%s", prefix.c_str(), value);
+      out.println(line);
+    }
     if (getConfigValue((prefix + ".uri").c_str(), value, sizeof(value))) {
       snprintf(line, sizeof(line), "%s.uri=%s", prefix.c_str(), value);
       out.println(line);
@@ -518,6 +538,22 @@ void MqttReporter::printConfig(Print &out) const {
     }
     if (getConfigValue((prefix + ".password").c_str(), value, sizeof(value), true)) {
       snprintf(line, sizeof(line), "%s.password=%s", prefix.c_str(), value);
+      out.println(line);
+    }
+    if (getConfigValue((prefix + ".iata").c_str(), value, sizeof(value))) {
+      snprintf(line, sizeof(line), "%s.iata=%s", prefix.c_str(), value);
+      out.println(line);
+    }
+    if (getConfigValue((prefix + ".model").c_str(), value, sizeof(value))) {
+      snprintf(line, sizeof(line), "%s.model=%s", prefix.c_str(), value);
+      out.println(line);
+    }
+    if (getConfigValue((prefix + ".client.version").c_str(), value, sizeof(value))) {
+      snprintf(line, sizeof(line), "%s.client.version=%s", prefix.c_str(), value);
+      out.println(line);
+    }
+    if (getConfigValue((prefix + ".retain.status").c_str(), value, sizeof(value))) {
+      snprintf(line, sizeof(line), "%s.retain.status=%s", prefix.c_str(), value);
       out.println(line);
     }
     snprintf(line, sizeof(line), "%s.connected=%s", prefix.c_str(), _mqtt_connected[i] ? "yes" : "no");

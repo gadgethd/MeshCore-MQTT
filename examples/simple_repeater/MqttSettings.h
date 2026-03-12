@@ -59,20 +59,20 @@
 #endif
 
 struct MqttBrokerRuntimeConfig {
+  char topic_root[32];
   char uri[128];
   char username[64];
   char password[64];
+  char iata[16];
+  char model[64];
+  char client_version[64];
+  uint8_t retain_status;
   uint8_t enabled;
 };
 
 struct MqttRuntimeConfig {
   char wifi_ssid[64];
   char wifi_pwd[64];
-  char topic_root[32];
-  char iata[16];
-  char model[64];
-  char client_version[64];
-  uint8_t retain_status;
   MqttBrokerRuntimeConfig brokers[MQTT_MAX_BROKERS];
 };
 
@@ -102,7 +102,7 @@ private:
   MqttRuntimeConfig _config;
 
   static constexpr uint32_t CONFIG_MAGIC = 0x4D515454; // MQTT
-  static constexpr uint16_t CONFIG_VERSION = 2;
+  static constexpr uint16_t CONFIG_VERSION = 3;
   static constexpr const char *CONFIG_PATH = "/mqtt.cfg";
 
   static void sanitizeConfig(MqttRuntimeConfig &config);
