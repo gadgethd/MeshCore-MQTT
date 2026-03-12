@@ -1471,3 +1471,27 @@ bool MyMesh::hasPendingWork() const {
 #endif
   return _mgr->getOutboundCount(0xFFFFFFFF) > 0;
 }
+
+String MyMesh::buildMqttStatusStatsJson() const {
+  const uint32_t battery_mv = board.getBattMilliVolts();
+  const uint32_t uptime_secs = (uint32_t)(uptime_millis / 1000ULL);
+  const uint32_t tx_air_secs = getTotalAirTime() / 1000UL;
+  const uint32_t rx_air_secs = getReceiveAirTime() / 1000UL;
+
+  float channel_utilization = 0.0f;
+  float air_util_tx = 0.0f;
+  if (uptime_secs > 0) {
+    channel_utilization = (100.0f * (float)(tx_air_secs + rx_air_secs)) / (float)uptime_secs;
+    air_util_tx = (100.0f * (float)tx_air_secs) / (float)uptime_secs;
+  }
+
+  String stats = "{";
+  stats += "\"battery_mv\":" + String(battery_mv);
+  stats += ",\"uptime_secs\":" + String(uptime_secs);
+  stats += ",\"tx_air_secs\":" + String(tx_air_secs);
+  stats += ",\"rx_air_secs\":" + String(rx_air_secs);
+  stats += ",\"channel_utilization\":" + String(channel_utilization, 1);
+  stats += ",\"air_util_tx\":" + String(air_util_tx, 1);
+  stats += "}";
+  return stats;
+}
