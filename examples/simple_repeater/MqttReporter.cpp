@@ -9,6 +9,60 @@
 
 extern "C" esp_err_t esp_crt_bundle_attach(void *conf);
 
+namespace {
+
+String replaceToken(String value, const char *token, const char *replacement) {
+  value.replace(token, replacement);
+  return value;
+}
+
+String expandTopicTokens(const char *topic_root, const char *iata, const char *origin_id) {
+  String topic = topic_root ? String(topic_root) : String("");
+  topic = replaceToken(topic, "{IATA}", iata);
+  topic = replaceToken(topic, "<IATA>", iata);
+  topic = replaceToken(topic, "{PUBLIC_KEY}", origin_id);
+  topic = replaceToken(topic, "<PUBLIC_KEY>", origin_id);
+  return topic;
+}
+
+String buildStatusTopicPath(const char *topic_root, const char *iata, const char *origin_id) {
+  String topic = expandTopicTokens(topic_root, iata, origin_id);
+  if (topic.endsWith("/packets")) {
+    topic.remove(topic.length() - 8);
+    topic += "/status";
+    return topic;
+  }
+  if (topic.endsWith("/status")) {
+    return topic;
+  }
+  topic += "/";
+  topic += iata;
+  topic += "/";
+  topic += origin_id;
+  topic += "/status";
+  return topic;
+}
+
+String buildPacketsTopicPath(const char *topic_root, const char *iata, const char *origin_id) {
+  String topic = expandTopicTokens(topic_root, iata, origin_id);
+  if (topic.endsWith("/status")) {
+    topic.remove(topic.length() - 7);
+    topic += "/packets";
+    return topic;
+  }
+  if (topic.endsWith("/packets")) {
+    return topic;
+  }
+  topic += "/";
+  topic += iata;
+  topic += "/";
+  topic += origin_id;
+  topic += "/packets";
+  return topic;
+}
+
+} // namespace
+
 MqttReporter::MqttReporter(MyMesh &mesh, mesh::RTCClock &clock)
     : _mesh(&mesh), _clock(&clock) {
   _last_wifi_attempt = 0;
@@ -173,10 +227,10 @@ void MqttReporter::ensureIdentityStrings() {
   for (int i = 0; i < MQTT_MAX_BROKERS; i++) {
     const MqttBrokerConfig &b = _settings.broker(i);
     if (!b.enabled) continue;
-    snprintf(_clients[i].status_topic, sizeof(_clients[i].status_topic),
-             "%s/%s/%s/status", b.topic_root, b.iata, _origin_id);
-    snprintf(_clients[i].packets_topic, sizeof(_clients[i].packets_topic),
-             "%s/%s/%s/packets", b.topic_root, b.iata, _origin_id);
+    String status_topic = buildStatusTopicPath(b.topic_root, b.iata, _origin_id);
+    String packets_topic = buildPacketsTopicPath(b.topic_root, b.iata, _origin_id);
+    StrHelper::strncpy(_clients[i].status_topic, status_topic.c_str(), sizeof(_clients[i].status_topic));
+    StrHelper::strncpy(_clients[i].packets_topic, packets_topic.c_str(), sizeof(_clients[i].packets_topic));
     _clients[i].offline_payload = buildStatusPayload("offline");
   }
 }
