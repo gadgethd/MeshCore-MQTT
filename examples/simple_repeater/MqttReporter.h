@@ -54,8 +54,8 @@ private:
     esp_mqtt_client_handle_t client;
     bool started;
     bool connected;
-    char status_topic[128];
-    char packets_topic[128];
+    char status_topic[384];
+    char packets_topic[384];
     String offline_payload;
     unsigned long last_status_publish;
   };
