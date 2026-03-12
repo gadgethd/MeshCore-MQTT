@@ -119,14 +119,57 @@ void MqttSettingsStore::resetToDefaults() {
   StrHelper::strncpy(_shared.model, MQTT_MODEL, sizeof(_shared.model));
   StrHelper::strncpy(_shared.client_version, MQTT_CLIENT_VERSION, sizeof(_shared.client_version));
 
-  // Broker 0 gets compile-time defaults and is enabled
-  StrHelper::strncpy(_brokers[0].uri, MQTT_URI, sizeof(_brokers[0].uri));
-  StrHelper::strncpy(_brokers[0].username, MQTT_USERNAME, sizeof(_brokers[0].username));
-  StrHelper::strncpy(_brokers[0].password, MQTT_PASSWORD, sizeof(_brokers[0].password));
-  StrHelper::strncpy(_brokers[0].topic_root, MQTT_TOPIC_ROOT, sizeof(_brokers[0].topic_root));
-  StrHelper::strncpy(_brokers[0].iata, MQTT_IATA, sizeof(_brokers[0].iata));
-  _brokers[0].retain_status = MQTT_RETAIN_STATUS ? 1 : 0;
-  _brokers[0].enabled = 1;
+  StrHelper::strncpy(_brokers[0].uri, MQTT_BROKER1_URI, sizeof(_brokers[0].uri));
+  StrHelper::strncpy(_brokers[0].username, MQTT_BROKER1_USERNAME, sizeof(_brokers[0].username));
+  StrHelper::strncpy(_brokers[0].password, MQTT_BROKER1_PASSWORD, sizeof(_brokers[0].password));
+  StrHelper::strncpy(_brokers[0].topic_root, MQTT_BROKER1_TOPIC_ROOT, sizeof(_brokers[0].topic_root));
+  StrHelper::strncpy(_brokers[0].iata, MQTT_BROKER1_IATA, sizeof(_brokers[0].iata));
+  _brokers[0].retain_status = MQTT_BROKER1_RETAIN_STATUS ? 1 : 0;
+  _brokers[0].enabled = MQTT_BROKER1_ENABLED ? 1 : 0;
+
+  StrHelper::strncpy(_brokers[1].uri, MQTT_BROKER2_URI, sizeof(_brokers[1].uri));
+  StrHelper::strncpy(_brokers[1].username, MQTT_BROKER2_USERNAME, sizeof(_brokers[1].username));
+  StrHelper::strncpy(_brokers[1].password, MQTT_BROKER2_PASSWORD, sizeof(_brokers[1].password));
+  StrHelper::strncpy(_brokers[1].topic_root, MQTT_BROKER2_TOPIC_ROOT, sizeof(_brokers[1].topic_root));
+  StrHelper::strncpy(_brokers[1].iata, MQTT_BROKER2_IATA, sizeof(_brokers[1].iata));
+  _brokers[1].retain_status = MQTT_BROKER2_RETAIN_STATUS ? 1 : 0;
+  _brokers[1].enabled = MQTT_BROKER2_ENABLED ? 1 : 0;
+
+  StrHelper::strncpy(_brokers[2].uri, MQTT_BROKER3_URI, sizeof(_brokers[2].uri));
+  StrHelper::strncpy(_brokers[2].username, MQTT_BROKER3_USERNAME, sizeof(_brokers[2].username));
+  StrHelper::strncpy(_brokers[2].password, MQTT_BROKER3_PASSWORD, sizeof(_brokers[2].password));
+  StrHelper::strncpy(_brokers[2].topic_root, MQTT_BROKER3_TOPIC_ROOT, sizeof(_brokers[2].topic_root));
+  StrHelper::strncpy(_brokers[2].iata, MQTT_BROKER3_IATA, sizeof(_brokers[2].iata));
+  _brokers[2].retain_status = MQTT_BROKER3_RETAIN_STATUS ? 1 : 0;
+  _brokers[2].enabled = MQTT_BROKER3_ENABLED ? 1 : 0;
+
+  StrHelper::strncpy(_brokers[3].uri, MQTT_BROKER4_URI, sizeof(_brokers[3].uri));
+  StrHelper::strncpy(_brokers[3].username, MQTT_BROKER4_USERNAME, sizeof(_brokers[3].username));
+  StrHelper::strncpy(_brokers[3].password, MQTT_BROKER4_PASSWORD, sizeof(_brokers[3].password));
+  StrHelper::strncpy(_brokers[3].topic_root, MQTT_BROKER4_TOPIC_ROOT, sizeof(_brokers[3].topic_root));
+  StrHelper::strncpy(_brokers[3].iata, MQTT_BROKER4_IATA, sizeof(_brokers[3].iata));
+  _brokers[3].retain_status = MQTT_BROKER4_RETAIN_STATUS ? 1 : 0;
+  _brokers[3].enabled = MQTT_BROKER4_ENABLED ? 1 : 0;
+
+  StrHelper::strncpy(_brokers[4].uri, MQTT_BROKER5_URI, sizeof(_brokers[4].uri));
+  StrHelper::strncpy(_brokers[4].username, MQTT_BROKER5_USERNAME, sizeof(_brokers[4].username));
+  StrHelper::strncpy(_brokers[4].password, MQTT_BROKER5_PASSWORD, sizeof(_brokers[4].password));
+  StrHelper::strncpy(_brokers[4].topic_root, MQTT_BROKER5_TOPIC_ROOT, sizeof(_brokers[4].topic_root));
+  StrHelper::strncpy(_brokers[4].iata, MQTT_BROKER5_IATA, sizeof(_brokers[4].iata));
+  _brokers[4].retain_status = MQTT_BROKER5_RETAIN_STATUS ? 1 : 0;
+  _brokers[4].enabled = MQTT_BROKER5_ENABLED ? 1 : 0;
+
+  StrHelper::strncpy(_brokers[5].uri, MQTT_BROKER6_URI, sizeof(_brokers[5].uri));
+  StrHelper::strncpy(_brokers[5].username, MQTT_BROKER6_USERNAME, sizeof(_brokers[5].username));
+  StrHelper::strncpy(_brokers[5].password, MQTT_BROKER6_PASSWORD, sizeof(_brokers[5].password));
+  StrHelper::strncpy(_brokers[5].topic_root, MQTT_BROKER6_TOPIC_ROOT, sizeof(_brokers[5].topic_root));
+  StrHelper::strncpy(_brokers[5].iata, MQTT_BROKER6_IATA, sizeof(_brokers[5].iata));
+  _brokers[5].retain_status = MQTT_BROKER6_RETAIN_STATUS ? 1 : 0;
+  _brokers[5].enabled = MQTT_BROKER6_ENABLED ? 1 : 0;
+
+  for (int i = 0; i < MQTT_MAX_BROKERS; i++) {
+    sanitizeBroker(_brokers[i]);
+  }
 }
 
 int MqttSettingsStore::brokerCount() const {

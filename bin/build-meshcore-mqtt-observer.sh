@@ -216,13 +216,34 @@ prompt_value MESHCORE_MQTT_ADMIN_PASSWORD "Admin password" "password"
 prompt_value MESHCORE_MQTT_BASE_ENV "Base ESP repeater env" "${MESHCORE_MQTT_BASE_ENV:-$BASE_ENV_DEFAULT}" 0 1
 prompt_value MESHCORE_MQTT_WIFI_SSID "WiFi SSID default" "${MESHCORE_MQTT_WIFI_SSID:-}"
 prompt_value MESHCORE_MQTT_WIFI_PWD "WiFi password default" "${MESHCORE_MQTT_WIFI_PWD:-}" 1
-prompt_value MESHCORE_MQTT_TOPIC_ROOT "MQTT topic root default" "meshcore"
-prompt_value MESHCORE_MQTT_URI "MQTT WebSocket URI default" "${MESHCORE_MQTT_URI:-}"
-prompt_value MESHCORE_MQTT_USERNAME "MQTT username default" "${MESHCORE_MQTT_USERNAME:-}"
-prompt_value MESHCORE_MQTT_PASSWORD "MQTT password default" "${MESHCORE_MQTT_PASSWORD:-}" 1
-prompt_value MESHCORE_MQTT_IATA "Observer IATA code default" "${MESHCORE_MQTT_IATA:-XXX}"
 prompt_value MESHCORE_MQTT_MODEL "Model label" "${MESHCORE_MQTT_MODEL:-$MESHCORE_MQTT_BASE_ENV}"
 prompt_value MESHCORE_MQTT_CLIENT_VERSION "Client version" "custom-mqtt-observer/1.0.0"
+
+prompt_value MESHCORE_MQTT_BROKER1_URI "MQTT broker 1 URI default" "${MESHCORE_MQTT_BROKER1_URI:-${MESHCORE_MQTT_URI:-}}"
+prompt_value MESHCORE_MQTT_BROKER1_USERNAME "MQTT broker 1 username default" "${MESHCORE_MQTT_BROKER1_USERNAME:-${MESHCORE_MQTT_USERNAME:-}}"
+prompt_value MESHCORE_MQTT_BROKER1_PASSWORD "MQTT broker 1 password default" "${MESHCORE_MQTT_BROKER1_PASSWORD:-${MESHCORE_MQTT_PASSWORD:-}}" 1
+prompt_value MESHCORE_MQTT_BROKER1_TOPIC_ROOT "MQTT broker 1 topic root default" "${MESHCORE_MQTT_BROKER1_TOPIC_ROOT:-${MESHCORE_MQTT_TOPIC_ROOT:-meshcore}}"
+prompt_value MESHCORE_MQTT_BROKER1_IATA "MQTT broker 1 IATA code default" "${MESHCORE_MQTT_BROKER1_IATA:-${MESHCORE_MQTT_IATA:-XXX}}"
+prompt_value MESHCORE_MQTT_BROKER1_RETAIN_STATUS "MQTT broker 1 retain status default (0/1)" "${MESHCORE_MQTT_BROKER1_RETAIN_STATUS:-${MESHCORE_MQTT_RETAIN_STATUS:-1}}"
+prompt_value MESHCORE_MQTT_BROKER1_ENABLED "MQTT broker 1 enabled default (0/1)" "${MESHCORE_MQTT_BROKER1_ENABLED:-1}"
+
+for idx in 2 3 4 5 6; do
+  broker_enabled_var="MESHCORE_MQTT_BROKER${idx}_ENABLED"
+  broker_uri_var="MESHCORE_MQTT_BROKER${idx}_URI"
+  broker_user_var="MESHCORE_MQTT_BROKER${idx}_USERNAME"
+  broker_pass_var="MESHCORE_MQTT_BROKER${idx}_PASSWORD"
+  broker_root_var="MESHCORE_MQTT_BROKER${idx}_TOPIC_ROOT"
+  broker_iata_var="MESHCORE_MQTT_BROKER${idx}_IATA"
+  broker_retain_var="MESHCORE_MQTT_BROKER${idx}_RETAIN_STATUS"
+
+  prompt_value "${broker_enabled_var}" "MQTT broker ${idx} enabled default (0/1)" "${!broker_enabled_var:-0}"
+  prompt_value "${broker_uri_var}" "MQTT broker ${idx} URI default" "${!broker_uri_var:-}"
+  prompt_value "${broker_user_var}" "MQTT broker ${idx} username default" "${!broker_user_var:-}"
+  prompt_value "${broker_pass_var}" "MQTT broker ${idx} password default" "${!broker_pass_var:-}" 1
+  prompt_value "${broker_root_var}" "MQTT broker ${idx} topic root default" "${!broker_root_var:-}"
+  prompt_value "${broker_iata_var}" "MQTT broker ${idx} IATA code default" "${!broker_iata_var:-}"
+  prompt_value "${broker_retain_var}" "MQTT broker ${idx} retain status default (0/1)" "${!broker_retain_var:-0}"
+done
 
 AVAILABLE_ENVS=$(discover_esp_repeater_envs)
 if ! printf '%s\n' "${AVAILABLE_ENVS}" | grep -Fxq "${MESHCORE_MQTT_BASE_ENV}"; then
@@ -258,13 +279,18 @@ echo "  Admin password:   ${MESHCORE_MQTT_ADMIN_PASSWORD}"
 echo "  Base env:         ${MESHCORE_MQTT_BASE_ENV}"
 echo "  WiFi SSID:        ${MESHCORE_MQTT_WIFI_SSID:-<set later via serial>}"
 echo "  WiFi password:    ${MESHCORE_MQTT_WIFI_PWD:-<set later via serial>}"
-echo "  MQTT topic root:  ${MESHCORE_MQTT_TOPIC_ROOT:-meshcore}"
-echo "  MQTT URI:         ${MESHCORE_MQTT_URI:-<set later via serial>}"
-echo "  MQTT username:    ${MESHCORE_MQTT_USERNAME:-<set later via serial>}"
-echo "  MQTT password:    ${MESHCORE_MQTT_PASSWORD:-<set later via serial>}"
-echo "  Observer IATA:    ${MESHCORE_MQTT_IATA:-XXX}"
 echo "  Model label:      ${MESHCORE_MQTT_MODEL}"
 echo "  Client version:   ${MESHCORE_MQTT_CLIENT_VERSION}"
+for idx in 1 2 3 4 5 6; do
+  broker_enabled_var="MESHCORE_MQTT_BROKER${idx}_ENABLED"
+  broker_uri_var="MESHCORE_MQTT_BROKER${idx}_URI"
+  broker_user_var="MESHCORE_MQTT_BROKER${idx}_USERNAME"
+  broker_pass_var="MESHCORE_MQTT_BROKER${idx}_PASSWORD"
+  broker_root_var="MESHCORE_MQTT_BROKER${idx}_TOPIC_ROOT"
+  broker_iata_var="MESHCORE_MQTT_BROKER${idx}_IATA"
+  broker_retain_var="MESHCORE_MQTT_BROKER${idx}_RETAIN_STATUS"
+  echo "  Broker ${idx}:        enabled=${!broker_enabled_var:-0} uri=${!broker_uri_var:-<set later via serial>} user=${!broker_user_var:-<set later via serial>} pass=${!broker_pass_var:-<set later via serial>} topic.root=${!broker_root_var:-<default>} iata=${!broker_iata_var:-<default>} retain=${!broker_retain_var:-0}"
+done
 echo "  LoRa radio:       configurable at runtime via MeshCore CLI (default: 869.525 MHz / BW 62.5 / SF8)"
 if [ -n "${PLATFORMIO_CORE_DIR:-}" ]; then
   echo "  PLATFORMIO_CORE_DIR: ${PLATFORMIO_CORE_DIR}"
