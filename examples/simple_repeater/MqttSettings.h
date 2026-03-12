@@ -67,7 +67,7 @@ struct MqttBrokerConfig {
   char uri[128];
   char username[64];
   char password[64];
-  char topic_root[32];
+  char topic_root[256];
   char iata[16];
   uint8_t retain_status;
   uint8_t enabled;
@@ -78,7 +78,7 @@ struct MqttBrokerConfig {
 struct MqttRuntimeConfig {
   char wifi_ssid[64];
   char wifi_pwd[64];
-  char topic_root[32];
+  char topic_root[256];
   char uri[128];
   char username[64];
   char password[64];
