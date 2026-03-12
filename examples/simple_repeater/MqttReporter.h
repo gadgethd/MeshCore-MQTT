@@ -42,38 +42,49 @@ public:
   const char *getWiFiSsid() const;
   bool isWiFiConnected() const;
   bool isMqttConnected() const;
+  bool isMqttConnected(int broker_idx) const;
   bool getConfigValue(const char *key, char *dest, size_t dest_size, bool mask_secret = false) const;
   bool setConfigValue(const char *key, const char *value);
   bool resetConfig();
-  void reconnect();
-  void printConfig(Print &out) const;
+  void reconnect(int broker_idx = -1);
+  void printConfig(Print &out, int broker_idx = -1) const;
 
 private:
+  struct BrokerClient {
+    esp_mqtt_client_handle_t client;
+    bool started;
+    bool connected;
+    char status_topic[128];
+    char packets_topic[128];
+    String offline_payload;
+    unsigned long last_status_publish;
+  };
+
+  struct EventContext {
+    MqttReporter *reporter;
+    int broker_idx;
+  };
+
   MyMesh *_mesh;
   mesh::RTCClock *_clock;
-  esp_mqtt_client_handle_t _mqtt_client;
   MqttSettingsStore _settings;
+  BrokerClient _clients[MQTT_MAX_BROKERS];
+  EventContext _event_ctx[MQTT_MAX_BROKERS];
   String _last_rx_raw;
-  String _offline_payload;
-  String _radio_string;
   unsigned long _last_wifi_attempt;
-  unsigned long _last_status_publish;
   bool _time_synced;
-  bool _mqtt_started;
-  bool _mqtt_connected;
   char _origin_id[65];
   char _client_id[40];
-  char _status_topic[128];
-  char _packets_topic[128];
 
   void ensureIdentityStrings();
-  void resetConnections();
+  void resetBrokerConnection(int idx);
+  void resetAllConnections();
   bool connectWiFi();
-  bool connectMQTT();
+  bool connectMQTT(int idx);
   void syncTimeFromNtp();
-  void publishStatus(const char *status);
-  void handleMqttEvent(esp_mqtt_event_handle_t event);
-  bool mqttNeedsTimeSync() const;
+  void publishStatus(int idx, const char *status);
+  void handleMqttEvent(int broker_idx, esp_mqtt_event_handle_t event);
+  bool brokerNeedsTimeSync(int idx) const;
 
   String buildIsoTimestamp() const;
   String buildTimeField() const;
@@ -90,6 +101,8 @@ private:
       float snr,
       uint32_t duration_ms,
       bool include_radio_metrics) const;
+
+  void printBrokerConfig(Print &out, int idx) const;
 
   static esp_err_t mqttEventHandler(esp_mqtt_event_handle_t event);
   static String jsonEscape(const char *input);

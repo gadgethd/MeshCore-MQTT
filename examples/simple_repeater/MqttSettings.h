@@ -54,6 +54,27 @@
   #define MQTT_RETAIN_STATUS 1
 #endif
 
+static constexpr int MQTT_MAX_BROKERS = 6;
+
+struct MqttSharedConfig {
+  char wifi_ssid[64];
+  char wifi_pwd[64];
+  char model[64];
+  char client_version[64];
+};
+
+struct MqttBrokerConfig {
+  char uri[128];
+  char username[64];
+  char password[64];
+  char topic_root[32];
+  char iata[16];
+  uint8_t retain_status;
+  uint8_t enabled;
+  uint8_t reserved[2];
+};
+
+// Legacy struct kept for v1 migration
 struct MqttRuntimeConfig {
   char wifi_ssid[64];
   char wifi_pwd[64];
@@ -76,27 +97,49 @@ public:
   bool save();
   void resetToDefaults();
 
-  const MqttRuntimeConfig &config() const { return _config; }
-
-  bool getValue(const char *key, char *dest, size_t dest_size, bool mask_secret = false) const;
-  bool setValue(const char *key, const char *value);
+  const MqttSharedConfig &shared() const { return _shared; }
+  const MqttBrokerConfig &broker(int idx) const { return _brokers[idx]; }
+  int brokerCount() const;
 
 private:
-  struct PersistedMqttConfig {
+  // v1 persisted format (for migration)
+  struct PersistedMqttConfigV1 {
     uint32_t magic;
     uint16_t version;
     uint16_t reserved;
     MqttRuntimeConfig config;
   };
 
+  // v2 persisted format
+  struct PersistedMqttConfigV2 {
+    uint32_t magic;
+    uint16_t version;
+    uint8_t broker_count;
+    uint8_t reserved;
+    MqttSharedConfig shared;
+    MqttBrokerConfig brokers[MQTT_MAX_BROKERS];
+  };
+
   FILESYSTEM *_fs;
-  MqttRuntimeConfig _config;
+  MqttSharedConfig _shared;
+  MqttBrokerConfig _brokers[MQTT_MAX_BROKERS];
 
   static constexpr uint32_t CONFIG_MAGIC = 0x4D515454; // MQTT
-  static constexpr uint16_t CONFIG_VERSION = 1;
+  static constexpr uint16_t CONFIG_VERSION = 2;
   static constexpr const char *CONFIG_PATH = "/mqtt.cfg";
 
-  static void sanitizeConfig(MqttRuntimeConfig &config);
+  bool loadV1(const uint8_t *data, size_t len);
+
+  static void sanitizeShared(MqttSharedConfig &cfg);
+  static void sanitizeBroker(MqttBrokerConfig &cfg);
+
+  // Key parsing: returns broker index (0-based) and sets key_out to the
+  // remaining key after stripping any "N." prefix. Returns -1 for shared keys.
+  static int parseKey(const char *key, const char **key_out);
+
+public:
+  bool getValue(const char *key, char *dest, size_t dest_size, bool mask_secret = false) const;
+  bool setValue(const char *key, const char *value);
 };
 
 #endif
