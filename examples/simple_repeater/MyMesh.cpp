@@ -1144,11 +1144,29 @@ bool MyMesh::handleMqttCommand(uint32_t sender_timestamp, char *command, char *r
     return true;
   }
 
-  if (strcmp(command, "mqtt reconnect") == 0) {
+  // "show mqtt.N" — show a single broker
+  if (memcmp(command, "show mqtt.", 10) == 0) {
     if (sender_timestamp != 0) {
       strcpy(reply, "Err - serial only");
     } else {
-      mqtt_reporter.reconnect();
+      int idx = atoi(command + 10) - 1;
+      if (idx >= 0 && idx < MQTT_MAX_BROKERS) {
+        mqtt_reporter.printConfig(Serial, idx);
+        reply[0] = 0;
+      } else {
+        strcpy(reply, "Err - broker 1-6");
+      }
+    }
+    return true;
+  }
+
+  if (memcmp(command, "mqtt reconnect", 14) == 0) {
+    if (sender_timestamp != 0) {
+      strcpy(reply, "Err - serial only");
+    } else {
+      int idx = -1;
+      if (command[14] == ' ') idx = atoi(command + 15) - 1;
+      mqtt_reporter.reconnect(idx);
       strcpy(reply, "OK");
     }
     return true;

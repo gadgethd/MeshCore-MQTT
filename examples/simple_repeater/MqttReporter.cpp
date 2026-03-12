@@ -10,23 +10,31 @@
 extern "C" esp_err_t esp_crt_bundle_attach(void *conf);
 
 MqttReporter::MqttReporter(MyMesh &mesh, mesh::RTCClock &clock)
-    : _mesh(&mesh), _clock(&clock), _mqtt_client(nullptr) {
+    : _mesh(&mesh), _clock(&clock) {
   _last_wifi_attempt = 0;
-  _last_status_publish = 0;
   _time_synced = false;
-  _mqtt_started = false;
-  _mqtt_connected = false;
   _origin_id[0] = '\0';
   _client_id[0] = '\0';
-  _status_topic[0] = '\0';
-  _packets_topic[0] = '\0';
+
+  for (int i = 0; i < MQTT_MAX_BROKERS; i++) {
+    _clients[i].client = nullptr;
+    _clients[i].started = false;
+    _clients[i].connected = false;
+    _clients[i].status_topic[0] = '\0';
+    _clients[i].packets_topic[0] = '\0';
+    _clients[i].last_status_publish = 0;
+    _event_ctx[i].reporter = this;
+    _event_ctx[i].broker_idx = i;
+  }
 }
 
 MqttReporter::~MqttReporter() {
-  if (_mqtt_client != nullptr) {
-    esp_mqtt_client_stop(_mqtt_client);
-    esp_mqtt_client_destroy(_mqtt_client);
-    _mqtt_client = nullptr;
+  for (int i = 0; i < MQTT_MAX_BROKERS; i++) {
+    if (_clients[i].client != nullptr) {
+      esp_mqtt_client_stop(_clients[i].client);
+      esp_mqtt_client_destroy(_clients[i].client);
+      _clients[i].client = nullptr;
+    }
   }
 }
 
@@ -41,8 +49,15 @@ void MqttReporter::begin(FILESYSTEM *fs) {
   WiFi.mode(WIFI_STA);
   WiFi.setAutoReconnect(true);
   WiFi.setSleep(false);
-  const MqttRuntimeConfig &config = _settings.config();
-  Serial.printf("MQTT reporter: WiFi SSID='%s' URI='%s'\n", config.wifi_ssid, config.uri);
+
+  const MqttSharedConfig &shared = _settings.shared();
+  Serial.printf("MQTT reporter: WiFi SSID='%s'\n", shared.wifi_ssid);
+  for (int i = 0; i < MQTT_MAX_BROKERS; i++) {
+    const MqttBrokerConfig &b = _settings.broker(i);
+    if (b.enabled && b.uri[0] != '\0') {
+      Serial.printf("MQTT reporter: broker %d URI='%s'\n", i + 1, b.uri);
+    }
+  }
   connectWiFi();
 }
 
@@ -50,26 +65,43 @@ void MqttReporter::loop() {
   ensureIdentityStrings();
 
   if (WiFi.status() != WL_CONNECTED) {
-    _mqtt_connected = false;
+    for (int i = 0; i < MQTT_MAX_BROKERS; i++) {
+      _clients[i].connected = false;
+    }
     connectWiFi();
     return;
   }
 
-  if (!_time_synced) {
-    syncTimeFromNtp();
-    if (mqttNeedsTimeSync() && !_time_synced) {
-      return;
+  // Check if any enabled broker needs NTP
+  bool any_needs_sync = false;
+  for (int i = 0; i < MQTT_MAX_BROKERS; i++) {
+    if (_settings.broker(i).enabled && brokerNeedsTimeSync(i)) {
+      any_needs_sync = true;
+      break;
     }
   }
 
-  if (!_mqtt_started) {
-    connectMQTT();
+  if (!_time_synced && any_needs_sync) {
+    syncTimeFromNtp();
+    if (!_time_synced) return;
   }
 
-  if (_mqtt_connected) {
-    unsigned long now = millis();
-    if (now - _last_status_publish >= (unsigned long)MQTT_STATUS_INTERVAL_SECS * 1000UL) {
-      publishStatus("online");
+  // Connect/maintain all enabled brokers
+  for (int i = 0; i < MQTT_MAX_BROKERS; i++) {
+    const MqttBrokerConfig &b = _settings.broker(i);
+    if (!b.enabled || b.uri[0] == '\0') continue;
+    if (!_clients[i].started) {
+      connectMQTT(i);
+    }
+  }
+
+  // Periodic status for connected brokers
+  unsigned long now = millis();
+  for (int i = 0; i < MQTT_MAX_BROKERS; i++) {
+    if (_clients[i].connected) {
+      if (now - _clients[i].last_status_publish >= (unsigned long)MQTT_STATUS_INTERVAL_SECS * 1000UL) {
+        publishStatus(i, "online");
+      }
     }
   }
 }
@@ -83,20 +115,48 @@ void MqttReporter::publishRxRaw(const uint8_t raw[], int len) {
 }
 
 void MqttReporter::publishRxPacket(mesh::Packet *pkt, int len, float score, int rssi, float snr, uint32_t duration_ms) {
-  if (!_mqtt_connected || _mqtt_client == nullptr || pkt == nullptr) return;
+  if (pkt == nullptr) return;
+
+  bool any_connected = false;
+  for (int i = 0; i < MQTT_MAX_BROKERS; i++) {
+    if (_clients[i].connected && _clients[i].client != nullptr) {
+      any_connected = true;
+      break;
+    }
+  }
+  if (!any_connected) return;
 
   String raw_hex = _last_rx_raw.length() ? _last_rx_raw : bytesToHex(pkt->payload, pkt->payload_len);
   String payload = buildPacketPayload("rx", pkt, len, raw_hex, score, rssi, snr, duration_ms, true);
-  esp_mqtt_client_publish(_mqtt_client, _packets_topic, payload.c_str(), 0, 0, 0);
+
+  for (int i = 0; i < MQTT_MAX_BROKERS; i++) {
+    if (_clients[i].connected && _clients[i].client != nullptr) {
+      esp_mqtt_client_publish(_clients[i].client, _clients[i].packets_topic, payload.c_str(), 0, 0, 0);
+    }
+  }
 }
 
 void MqttReporter::publishTxPacket(mesh::Packet *pkt, int len) {
-  if (!_mqtt_connected || _mqtt_client == nullptr || pkt == nullptr) return;
+  if (pkt == nullptr) return;
+
+  bool any_connected = false;
+  for (int i = 0; i < MQTT_MAX_BROKERS; i++) {
+    if (_clients[i].connected && _clients[i].client != nullptr) {
+      any_connected = true;
+      break;
+    }
+  }
+  if (!any_connected) return;
 
   uint8_t raw[MAX_TRANS_UNIT];
   int raw_len = pkt->writeTo(raw);
   String payload = buildPacketPayload("tx", pkt, len, bytesToHex(raw, raw_len), 0.0f, 0, 0.0f, 0, false);
-  esp_mqtt_client_publish(_mqtt_client, _packets_topic, payload.c_str(), 0, 0, 0);
+
+  for (int i = 0; i < MQTT_MAX_BROKERS; i++) {
+    if (_clients[i].connected && _clients[i].client != nullptr) {
+      esp_mqtt_client_publish(_clients[i].client, _clients[i].packets_topic, payload.c_str(), 0, 0, 0);
+    }
+  }
 }
 
 void MqttReporter::ensureIdentityStrings() {
@@ -110,21 +170,33 @@ void MqttReporter::ensureIdentityStrings() {
     snprintf(_client_id, sizeof(_client_id), "meshcore_%.*s", 16, _origin_id);
   }
 
-  const MqttRuntimeConfig &config = _settings.config();
-  snprintf(_status_topic, sizeof(_status_topic), "%s/%s/%s/status", config.topic_root, config.iata, _origin_id);
-  snprintf(_packets_topic, sizeof(_packets_topic), "%s/%s/%s/packets", config.topic_root, config.iata, _origin_id);
-  _offline_payload = buildStatusPayload("offline");
+  for (int i = 0; i < MQTT_MAX_BROKERS; i++) {
+    const MqttBrokerConfig &b = _settings.broker(i);
+    if (!b.enabled) continue;
+    snprintf(_clients[i].status_topic, sizeof(_clients[i].status_topic),
+             "%s/%s/%s/status", b.topic_root, b.iata, _origin_id);
+    snprintf(_clients[i].packets_topic, sizeof(_clients[i].packets_topic),
+             "%s/%s/%s/packets", b.topic_root, b.iata, _origin_id);
+    _clients[i].offline_payload = buildStatusPayload("offline");
+  }
 }
 
-void MqttReporter::resetConnections() {
-  if (_mqtt_client != nullptr) {
-    esp_mqtt_client_stop(_mqtt_client);
-    esp_mqtt_client_destroy(_mqtt_client);
-    _mqtt_client = nullptr;
+void MqttReporter::resetBrokerConnection(int idx) {
+  if (idx < 0 || idx >= MQTT_MAX_BROKERS) return;
+  BrokerClient &bc = _clients[idx];
+  if (bc.client != nullptr) {
+    esp_mqtt_client_stop(bc.client);
+    esp_mqtt_client_destroy(bc.client);
+    bc.client = nullptr;
   }
+  bc.started = false;
+  bc.connected = false;
+}
 
-  _mqtt_started = false;
-  _mqtt_connected = false;
+void MqttReporter::resetAllConnections() {
+  for (int i = 0; i < MQTT_MAX_BROKERS; i++) {
+    resetBrokerConnection(i);
+  }
   _last_wifi_attempt = 0;
 
   if (WiFi.getMode() != WIFI_STA) {
@@ -136,67 +208,74 @@ void MqttReporter::resetConnections() {
 }
 
 bool MqttReporter::connectWiFi() {
-  const MqttRuntimeConfig &config = _settings.config();
+  const MqttSharedConfig &shared = _settings.shared();
   if (WiFi.status() == WL_CONNECTED) return true;
-  if (config.wifi_ssid[0] == '\0') return false;
+  if (shared.wifi_ssid[0] == '\0') return false;
 
   unsigned long now = millis();
   if (now - _last_wifi_attempt < 5000UL) return false;
   _last_wifi_attempt = now;
 
-  Serial.printf("MQTT reporter: connecting WiFi to '%s'\n", config.wifi_ssid);
-  WiFi.begin(config.wifi_ssid, config.wifi_pwd);
+  Serial.printf("MQTT reporter: connecting WiFi to '%s'\n", shared.wifi_ssid);
+  WiFi.begin(shared.wifi_ssid, shared.wifi_pwd);
   return false;
 }
 
-bool MqttReporter::connectMQTT() {
-  const MqttRuntimeConfig &runtime_config = _settings.config();
-  if (_mqtt_started) return true;
+bool MqttReporter::connectMQTT(int idx) {
+  if (idx < 0 || idx >= MQTT_MAX_BROKERS) return false;
+  BrokerClient &bc = _clients[idx];
+  const MqttBrokerConfig &broker = _settings.broker(idx);
+
+  if (bc.started) return true;
   if (WiFi.status() != WL_CONNECTED) return false;
-  if (runtime_config.uri[0] == '\0') return false;
-  if (mqttNeedsTimeSync() && !_time_synced) return false;
+  if (broker.uri[0] == '\0') return false;
+  if (brokerNeedsTimeSync(idx) && !_time_synced) return false;
+
+  // Use a unique client_id per broker
+  char broker_client_id[48];
+  snprintf(broker_client_id, sizeof(broker_client_id), "%s_%d", _client_id, idx + 1);
 
   Serial.printf(
-      "MQTT reporter: init MQTT heap=%u uri='%s' user='%s'\n",
+      "MQTT reporter: init broker %d heap=%u uri='%s' user='%s'\n",
+      idx + 1,
       (unsigned int)ESP.getFreeHeap(),
-      runtime_config.uri,
-      runtime_config.username);
+      broker.uri,
+      broker.username);
 
   esp_mqtt_client_config_t mqtt_config = {};
-  mqtt_config.uri = runtime_config.uri;
-  mqtt_config.client_id = _client_id;
-  mqtt_config.username = runtime_config.username;
-  mqtt_config.password = runtime_config.password;
+  mqtt_config.uri = broker.uri;
+  mqtt_config.client_id = broker_client_id;
+  mqtt_config.username = broker.username;
+  mqtt_config.password = broker.password;
   mqtt_config.keepalive = 60;
   mqtt_config.disable_auto_reconnect = false;
   mqtt_config.buffer_size = 2048;
   mqtt_config.out_buffer_size = 2048;
-  mqtt_config.lwt_topic = _status_topic;
-  mqtt_config.lwt_msg = _offline_payload.c_str();
+  mqtt_config.lwt_topic = bc.status_topic;
+  mqtt_config.lwt_msg = bc.offline_payload.c_str();
   mqtt_config.lwt_qos = 0;
-  mqtt_config.lwt_retain = runtime_config.retain_status != 0;
-  mqtt_config.user_context = this;
+  mqtt_config.lwt_retain = broker.retain_status != 0;
+  mqtt_config.user_context = &_event_ctx[idx];
   mqtt_config.event_handle = mqttEventHandler;
-  // Let the URI parser choose ws/wss transport to avoid config conflicts.
-  if (strncmp(runtime_config.uri, "wss://", 6) == 0) {
+  if (strncmp(broker.uri, "wss://", 6) == 0) {
     mqtt_config.crt_bundle_attach = esp_crt_bundle_attach;
   }
 
-  _mqtt_client = esp_mqtt_client_init(&mqtt_config);
-  if (_mqtt_client == nullptr) {
-    Serial.println("MQTT reporter: esp_mqtt_client_init failed");
+  bc.client = esp_mqtt_client_init(&mqtt_config);
+  if (bc.client == nullptr) {
+    Serial.printf("MQTT reporter: broker %d esp_mqtt_client_init failed\n", idx + 1);
     return false;
   }
 
-  if (esp_mqtt_client_start(_mqtt_client) != ESP_OK) {
-    Serial.println("MQTT reporter: esp_mqtt_client_start failed");
-    esp_mqtt_client_destroy(_mqtt_client);
-    _mqtt_client = nullptr;
+  if (esp_mqtt_client_start(bc.client) != ESP_OK) {
+    Serial.printf("MQTT reporter: broker %d esp_mqtt_client_start failed\n", idx + 1);
+    esp_mqtt_client_destroy(bc.client);
+    bc.client = nullptr;
     return false;
   }
 
-  Serial.println("MQTT reporter: MQTT client started");
-  _mqtt_started = true;
+  Serial.printf("MQTT reporter: broker %d MQTT client started\n", idx + 1);
+  bc.started = true;
   return true;
 }
 
@@ -214,41 +293,49 @@ void MqttReporter::syncTimeFromNtp() {
     _clock->setCurrentTime((uint32_t)now);
     _time_synced = true;
     Serial.println("MQTT reporter: NTP sync complete");
-  } else if (mqttNeedsTimeSync()) {
+  } else {
     Serial.println("MQTT reporter: NTP sync failed");
   }
 }
 
-void MqttReporter::publishStatus(const char *status) {
-  if (!_mqtt_connected || _mqtt_client == nullptr) return;
+void MqttReporter::publishStatus(int idx, const char *status) {
+  if (idx < 0 || idx >= MQTT_MAX_BROKERS) return;
+  BrokerClient &bc = _clients[idx];
+  if (!bc.connected || bc.client == nullptr) return;
 
   String payload = buildStatusPayload(status);
-  esp_mqtt_client_publish(_mqtt_client, _status_topic, payload.c_str(), 0, 0, _settings.config().retain_status != 0);
-  _last_status_publish = millis();
+  esp_mqtt_client_publish(bc.client, bc.status_topic, payload.c_str(), 0, 0,
+                          _settings.broker(idx).retain_status != 0);
+  bc.last_status_publish = millis();
 }
 
-void MqttReporter::handleMqttEvent(esp_mqtt_event_handle_t event) {
+void MqttReporter::handleMqttEvent(int broker_idx, esp_mqtt_event_handle_t event) {
+  if (broker_idx < 0 || broker_idx >= MQTT_MAX_BROKERS) return;
+  BrokerClient &bc = _clients[broker_idx];
+
   switch (event->event_id) {
     case MQTT_EVENT_CONNECTED:
-      _mqtt_connected = true;
-      Serial.println("MQTT reporter: connected");
-      publishStatus("online");
+      bc.connected = true;
+      Serial.printf("MQTT reporter: broker %d connected\n", broker_idx + 1);
+      publishStatus(broker_idx, "online");
       break;
     case MQTT_EVENT_DISCONNECTED:
-      Serial.println("MQTT reporter: disconnected");
-      _mqtt_connected = false;
+      Serial.printf("MQTT reporter: broker %d disconnected\n", broker_idx + 1);
+      bc.connected = false;
       break;
     case MQTT_EVENT_ERROR:
-      Serial.printf("MQTT reporter: error type=%d\n", event->error_handle ? event->error_handle->error_type : -1);
-      _mqtt_connected = false;
+      Serial.printf("MQTT reporter: broker %d error type=%d\n", broker_idx + 1,
+                     event->error_handle ? event->error_handle->error_type : -1);
+      bc.connected = false;
       break;
     default:
       break;
   }
 }
 
-bool MqttReporter::mqttNeedsTimeSync() const {
-  return strncmp(_settings.config().uri, "wss://", 6) == 0;
+bool MqttReporter::brokerNeedsTimeSync(int idx) const {
+  if (idx < 0 || idx >= MQTT_MAX_BROKERS) return false;
+  return strncmp(_settings.broker(idx).uri, "wss://", 6) == 0;
 }
 
 String MqttReporter::buildIsoTimestamp() const {
@@ -293,17 +380,17 @@ String MqttReporter::buildRadioString() const {
 }
 
 String MqttReporter::buildStatusPayload(const char *status) const {
-  const MqttRuntimeConfig &config = _settings.config();
+  const MqttSharedConfig &shared = _settings.shared();
   String payload = "{";
   if (status != nullptr && status[0] != '\0') {
     payload += "\"status\":\"" + jsonEscape(status) + "\",";
   }
   payload += "\"origin\":\"" + jsonEscape(_mesh->getNodeName()) + "\"";
   payload += ",\"origin_id\":\"" + String(_origin_id) + "\"";
-  payload += ",\"model\":\"" + jsonEscape(config.model) + "\"";
+  payload += ",\"model\":\"" + jsonEscape(shared.model) + "\"";
   payload += ",\"firmware_version\":\"" + jsonEscape(FIRMWARE_VERSION) + "\"";
   payload += ",\"radio\":\"" + jsonEscape(buildRadioString().c_str()) + "\"";
-  payload += ",\"client_version\":\"" + jsonEscape(config.client_version) + "\"";
+  payload += ",\"client_version\":\"" + jsonEscape(shared.client_version) + "\"";
   payload += ",\"timestamp\":\"" + jsonEscape(buildIsoTimestamp().c_str()) + "\"";
   payload += "}";
   return payload;
@@ -357,7 +444,7 @@ String MqttReporter::buildPacketPayload(
 }
 
 const char *MqttReporter::getWiFiSsid() const {
-  return _settings.config().wifi_ssid;
+  return _settings.shared().wifi_ssid;
 }
 
 bool MqttReporter::isWiFiConnected() const {
@@ -365,7 +452,15 @@ bool MqttReporter::isWiFiConnected() const {
 }
 
 bool MqttReporter::isMqttConnected() const {
-  return _mqtt_connected;
+  for (int i = 0; i < MQTT_MAX_BROKERS; i++) {
+    if (_clients[i].connected) return true;
+  }
+  return false;
+}
+
+bool MqttReporter::isMqttConnected(int broker_idx) const {
+  if (broker_idx < 0 || broker_idx >= MQTT_MAX_BROKERS) return false;
+  return _clients[broker_idx].connected;
 }
 
 bool MqttReporter::getConfigValue(const char *key, char *dest, size_t dest_size, bool mask_secret) const {
@@ -383,64 +478,104 @@ bool MqttReporter::resetConfig() {
   _settings.resetToDefaults();
   if (!_settings.save()) return false;
   ensureIdentityStrings();
-  resetConnections();
+  resetAllConnections();
   return true;
 }
 
-void MqttReporter::reconnect() {
+void MqttReporter::reconnect(int broker_idx) {
   ensureIdentityStrings();
-  resetConnections();
+  if (broker_idx >= 0 && broker_idx < MQTT_MAX_BROKERS) {
+    resetBrokerConnection(broker_idx);
+  } else {
+    resetAllConnections();
+  }
 }
 
-void MqttReporter::printConfig(Print &out) const {
+void MqttReporter::printBrokerConfig(Print &out, int idx) const {
+  char value[160];
+  char line[192];
+  char key[32];
+
+  snprintf(line, sizeof(line), "  broker %d:", idx + 1);
+  out.println(line);
+
+  snprintf(key, sizeof(key), "%d.enabled", idx + 1);
+  if (getConfigValue(key, value, sizeof(value))) {
+    snprintf(line, sizeof(line), "    enabled=%s", value);
+    out.println(line);
+  }
+  snprintf(key, sizeof(key), "%d.uri", idx + 1);
+  if (getConfigValue(key, value, sizeof(value))) {
+    snprintf(line, sizeof(line), "    uri=%s", value);
+    out.println(line);
+  }
+  snprintf(key, sizeof(key), "%d.username", idx + 1);
+  if (getConfigValue(key, value, sizeof(value))) {
+    snprintf(line, sizeof(line), "    username=%s", value);
+    out.println(line);
+  }
+  snprintf(key, sizeof(key), "%d.password", idx + 1);
+  if (getConfigValue(key, value, sizeof(value), true)) {
+    snprintf(line, sizeof(line), "    password=%s", value);
+    out.println(line);
+  }
+  snprintf(key, sizeof(key), "%d.topic.root", idx + 1);
+  if (getConfigValue(key, value, sizeof(value))) {
+    snprintf(line, sizeof(line), "    topic.root=%s", value);
+    out.println(line);
+  }
+  snprintf(key, sizeof(key), "%d.iata", idx + 1);
+  if (getConfigValue(key, value, sizeof(value))) {
+    snprintf(line, sizeof(line), "    iata=%s", value);
+    out.println(line);
+  }
+  snprintf(key, sizeof(key), "%d.retain.status", idx + 1);
+  if (getConfigValue(key, value, sizeof(value))) {
+    snprintf(line, sizeof(line), "    retain.status=%s", value);
+    out.println(line);
+  }
+
+  snprintf(line, sizeof(line), "    mqtt.connected=%s", isMqttConnected(idx) ? "yes" : "no");
+  out.println(line);
+}
+
+void MqttReporter::printConfig(Print &out, int broker_idx) const {
   char value[160];
   char line[192];
 
   out.println("MQTT config:");
-  if (getConfigValue("wifi.ssid", value, sizeof(value))) {
-    snprintf(line, sizeof(line), "wifi.ssid=%s", value);
+
+  if (broker_idx == -1) {
+    // Print shared config
+    if (getConfigValue("wifi.ssid", value, sizeof(value))) {
+      snprintf(line, sizeof(line), "wifi.ssid=%s", value);
+      out.println(line);
+    }
+    if (getConfigValue("wifi.pass", value, sizeof(value), true)) {
+      snprintf(line, sizeof(line), "wifi.pass=%s", value);
+      out.println(line);
+    }
+    if (getConfigValue("model", value, sizeof(value))) {
+      snprintf(line, sizeof(line), "model=%s", value);
+      out.println(line);
+    }
+    if (getConfigValue("client.version", value, sizeof(value))) {
+      snprintf(line, sizeof(line), "client.version=%s", value);
+      out.println(line);
+    }
+    snprintf(line, sizeof(line), "wifi.connected=%s", isWiFiConnected() ? "yes" : "no");
     out.println(line);
+
+    // Print all brokers that are enabled or have a URI
+    for (int i = 0; i < MQTT_MAX_BROKERS; i++) {
+      const MqttBrokerConfig &b = _settings.broker(i);
+      if (b.enabled || b.uri[0] != '\0') {
+        printBrokerConfig(out, i);
+      }
+    }
+  } else if (broker_idx >= 0 && broker_idx < MQTT_MAX_BROKERS) {
+    printBrokerConfig(out, broker_idx);
   }
-  if (getConfigValue("wifi.pass", value, sizeof(value), true)) {
-    snprintf(line, sizeof(line), "wifi.pass=%s", value);
-    out.println(line);
-  }
-  if (getConfigValue("uri", value, sizeof(value))) {
-    snprintf(line, sizeof(line), "uri=%s", value);
-    out.println(line);
-  }
-  if (getConfigValue("username", value, sizeof(value))) {
-    snprintf(line, sizeof(line), "username=%s", value);
-    out.println(line);
-  }
-  if (getConfigValue("password", value, sizeof(value), true)) {
-    snprintf(line, sizeof(line), "password=%s", value);
-    out.println(line);
-  }
-  if (getConfigValue("topic.root", value, sizeof(value))) {
-    snprintf(line, sizeof(line), "topic.root=%s", value);
-    out.println(line);
-  }
-  if (getConfigValue("iata", value, sizeof(value))) {
-    snprintf(line, sizeof(line), "iata=%s", value);
-    out.println(line);
-  }
-  if (getConfigValue("model", value, sizeof(value))) {
-    snprintf(line, sizeof(line), "model=%s", value);
-    out.println(line);
-  }
-  if (getConfigValue("client.version", value, sizeof(value))) {
-    snprintf(line, sizeof(line), "client.version=%s", value);
-    out.println(line);
-  }
-  if (getConfigValue("retain.status", value, sizeof(value))) {
-    snprintf(line, sizeof(line), "retain.status=%s", value);
-    out.println(line);
-  }
-  snprintf(line, sizeof(line), "wifi.connected=%s", isWiFiConnected() ? "yes" : "no");
-  out.println(line);
-  snprintf(line, sizeof(line), "mqtt.connected=%s", isMqttConnected() ? "yes" : "no");
-  out.println(line);
 }
 
 esp_err_t MqttReporter::mqttEventHandler(esp_mqtt_event_handle_t event) {
@@ -448,7 +583,8 @@ esp_err_t MqttReporter::mqttEventHandler(esp_mqtt_event_handle_t event) {
     return ESP_OK;
   }
 
-  static_cast<MqttReporter *>(event->user_context)->handleMqttEvent(event);
+  EventContext *ctx = static_cast<EventContext *>(event->user_context);
+  ctx->reporter->handleMqttEvent(ctx->broker_idx, event);
   return ESP_OK;
 }
 
