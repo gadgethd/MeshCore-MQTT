@@ -437,6 +437,7 @@ String MqttReporter::buildStatusPayload(const char *status) const {
   payload += ",\"radio\":\"" + jsonEscape(buildRadioString().c_str()) + "\"";
   payload += ",\"client_version\":\"" + jsonEscape(shared.client_version) + "\"";
   payload += ",\"timestamp\":\"" + jsonEscape(buildIsoTimestamp().c_str()) + "\"";
+  payload += ",\"stats\":" + _mesh->buildMqttStatusStatsJson();
   payload += "}";
   return payload;
 }

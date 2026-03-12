@@ -186,6 +186,7 @@ public:
   const char* getBuildDate() override { return FIRMWARE_BUILD_DATE; }
   const char* getRole() override { return FIRMWARE_ROLE; }
   const char* getNodeName() { return _prefs.node_name; }
+  String buildMqttStatusStatsJson() const;
   NodePrefs* getNodePrefs() {
     return &_prefs;
   }
