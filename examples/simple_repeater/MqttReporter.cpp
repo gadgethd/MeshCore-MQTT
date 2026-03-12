@@ -260,7 +260,7 @@ void MqttReporter::ensureIdentityStrings() {
     String packets_topic = buildPacketsTopicPath(b.topic_root, b.iata, _origin_id);
     StrHelper::strncpy(_clients[i].status_topic, status_topic.c_str(), sizeof(_clients[i].status_topic));
     StrHelper::strncpy(_clients[i].packets_topic, packets_topic.c_str(), sizeof(_clients[i].packets_topic));
-    _clients[i].offline_payload = buildStatusPayload("offline");
+    _clients[i].offline_payload = buildStatusPayload(i, "offline");
   }
 }
 
@@ -390,7 +390,7 @@ void MqttReporter::publishStatus(int idx, const char *status) {
   BrokerClient &bc = _clients[idx];
   if (!bc.connected || bc.client == nullptr) return;
 
-  String payload = buildStatusPayload(status);
+  String payload = buildStatusPayload(idx, status);
   if (esp_mqtt_client_publish(bc.client, bc.status_topic, payload.c_str(), 0, 0,
                               _settings.broker(idx).retain_status != 0) < 0) {
     bc.publish_failures++;
@@ -474,7 +474,40 @@ String MqttReporter::buildRadioString() const {
   return String(radio_buf);
 }
 
-String MqttReporter::buildStatusPayload(const char *status) const {
+String MqttReporter::buildStatusStatsPayload(int broker_idx) const {
+  String stats = "{";
+  stats += "\"uptime_ms\":" + String(millis());
+  stats += ",\"loop_iterations\":" + String(_loop_iterations);
+  stats += ",\"wifi_reconnect_attempts\":" + String(_wifi_reconnect_attempts);
+  stats += ",\"rx_publish_calls\":" + String(_rx_publish_calls);
+  stats += ",\"tx_publish_calls\":" + String(_tx_publish_calls);
+  stats += ",\"publish_skipped_no_connection\":" + String(_publish_skipped_no_connection);
+  stats += ",\"heap_free\":" + String(ESP.getFreeHeap());
+  stats += ",\"heap_min_free\":" + String(ESP.getMinFreeHeap());
+  stats += ",\"heap_min_seen_since_boot\":" + String(_min_free_heap);
+  stats += ",\"wifi_connected\":" + String(isWiFiConnected() ? "true" : "false");
+
+  if (broker_idx >= 0 && broker_idx < MQTT_MAX_BROKERS) {
+    const BrokerClient &bc = _clients[broker_idx];
+    stats += ",\"mqtt\":{";
+    stats += "\"broker_index\":" + String(broker_idx + 1);
+    stats += ",\"connect_attempts\":" + String(bc.connect_attempts);
+    stats += ",\"connect_start_failures\":" + String(bc.connect_start_failures);
+    stats += ",\"connect_events\":" + String(bc.connect_events);
+    stats += ",\"disconnect_events\":" + String(bc.disconnect_events);
+    stats += ",\"error_events\":" + String(bc.error_events);
+    stats += ",\"status_publishes\":" + String(bc.status_publish_count);
+    stats += ",\"packet_publishes\":" + String(bc.packet_publish_count);
+    stats += ",\"publish_failures\":" + String(bc.publish_failures);
+    stats += ",\"connected\":" + String(bc.connected ? "true" : "false");
+    stats += "}";
+  }
+
+  stats += "}";
+  return stats;
+}
+
+String MqttReporter::buildStatusPayload(int broker_idx, const char *status) const {
   const MqttSharedConfig &shared = _settings.shared();
   String payload = "{";
   if (status != nullptr && status[0] != '\0') {
@@ -487,7 +520,7 @@ String MqttReporter::buildStatusPayload(const char *status) const {
   payload += ",\"radio\":\"" + jsonEscape(buildRadioString().c_str()) + "\"";
   payload += ",\"client_version\":\"" + jsonEscape(shared.client_version) + "\"";
   payload += ",\"timestamp\":\"" + jsonEscape(buildIsoTimestamp().c_str()) + "\"";
-  payload += ",\"stats\":" + _mesh->buildMqttStatusStatsJson();
+  payload += ",\"stats\":" + buildStatusStatsPayload(broker_idx);
   payload += "}";
   return payload;
 }

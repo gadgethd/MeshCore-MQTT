@@ -106,7 +106,8 @@ private:
   String buildTimeField() const;
   String buildDateField() const;
   String buildRadioString() const;
-  String buildStatusPayload(const char *status) const;
+  String buildStatusPayload(int broker_idx, const char *status) const;
+  String buildStatusStatsPayload(int broker_idx) const;
   String buildPacketPayload(
       const char *direction,
       mesh::Packet *pkt,
