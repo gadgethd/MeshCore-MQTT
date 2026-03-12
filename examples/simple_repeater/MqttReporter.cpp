@@ -257,7 +257,7 @@ bool MqttReporter::connectMQTT(int idx) {
   mqtt_config.lwt_retain = broker.retain_status != 0;
   mqtt_config.user_context = &_event_ctx[idx];
   mqtt_config.event_handle = mqttEventHandler;
-  if (strncmp(broker.uri, "wss://", 6) == 0) {
+  if (strncmp(broker.uri, "wss://", 6) == 0 || strncmp(broker.uri, "mqtts://", 8) == 0) {
     mqtt_config.crt_bundle_attach = esp_crt_bundle_attach;
   }
 
@@ -335,7 +335,8 @@ void MqttReporter::handleMqttEvent(int broker_idx, esp_mqtt_event_handle_t event
 
 bool MqttReporter::brokerNeedsTimeSync(int idx) const {
   if (idx < 0 || idx >= MQTT_MAX_BROKERS) return false;
-  return strncmp(_settings.broker(idx).uri, "wss://", 6) == 0;
+  const char *uri = _settings.broker(idx).uri;
+  return strncmp(uri, "wss://", 6) == 0 || strncmp(uri, "mqtts://", 8) == 0;
 }
 
 String MqttReporter::buildIsoTimestamp() const {
