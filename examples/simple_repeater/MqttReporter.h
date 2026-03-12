@@ -49,46 +49,38 @@ public:
   void printConfig(Print &out) const;
 
 private:
-  struct BrokerContext {
-    MqttReporter *reporter;
-    uint8_t broker_index;
-  };
-
   MyMesh *_mesh;
   mesh::RTCClock *_clock;
-  esp_mqtt_client_handle_t _mqtt_clients[MQTT_MAX_BROKERS];
-  BrokerContext _broker_contexts[MQTT_MAX_BROKERS];
+  esp_mqtt_client_handle_t _mqtt_client;
   MqttSettingsStore _settings;
   String _last_rx_raw;
-  String _offline_payloads[MQTT_MAX_BROKERS];
+  String _offline_payload;
+  String _radio_string;
   unsigned long _last_wifi_attempt;
   unsigned long _last_status_publish;
   bool _time_synced;
-  bool _mqtt_started[MQTT_MAX_BROKERS];
-  bool _mqtt_connected[MQTT_MAX_BROKERS];
+  bool _mqtt_started;
+  bool _mqtt_connected;
   char _origin_id[65];
-  char _client_ids[MQTT_MAX_BROKERS][48];
-  char _status_topics[MQTT_MAX_BROKERS][128];
-  char _packets_topics[MQTT_MAX_BROKERS][128];
+  char _client_id[40];
+  char _status_topic[128];
+  char _packets_topic[128];
 
   void ensureIdentityStrings();
   void resetConnections();
   bool connectWiFi();
-  bool connectMQTT(uint8_t broker_index);
+  bool connectMQTT();
   void syncTimeFromNtp();
   void publishStatus(const char *status);
-  void publishStatusForBroker(uint8_t broker_index, const char *status);
-  void handleMqttEvent(uint8_t broker_index, esp_mqtt_event_handle_t event);
+  void handleMqttEvent(esp_mqtt_event_handle_t event);
   bool mqttNeedsTimeSync() const;
-  bool isBrokerEnabled(uint8_t broker_index) const;
 
   String buildIsoTimestamp() const;
   String buildTimeField() const;
   String buildDateField() const;
   String buildRadioString() const;
-  String buildStatusPayload(uint8_t broker_index, const char *status) const;
+  String buildStatusPayload(const char *status) const;
   String buildPacketPayload(
-      uint8_t broker_index,
       const char *direction,
       mesh::Packet *pkt,
       int len,
