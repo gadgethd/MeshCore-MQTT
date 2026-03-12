@@ -35,11 +35,6 @@ String buildStatusTopicPath(const char *topic_root, const char *iata, const char
   if (topic.endsWith("/status")) {
     return topic;
   }
-  topic += "/";
-  topic += iata;
-  topic += "/";
-  topic += origin_id;
-  topic += "/status";
   return topic;
 }
 
@@ -53,11 +48,6 @@ String buildPacketsTopicPath(const char *topic_root, const char *iata, const cha
   if (topic.endsWith("/packets")) {
     return topic;
   }
-  topic += "/";
-  topic += iata;
-  topic += "/";
-  topic += origin_id;
-  topic += "/packets";
   return topic;
 }
 
