@@ -68,6 +68,12 @@ MqttReporter::MqttReporter(MyMesh &mesh, mesh::RTCClock &clock)
   _wifi_reconnect_attempts = 0;
   _loop_iterations = 0;
   _min_free_heap = UINT32_MAX;
+  _last_cpu_sample_ms = 0;
+  _idle_pct_core0 = -1.0f;
+  _idle_pct_core1 = -1.0f;
+  _last_idle_tick_count[0] = 0;
+  _last_idle_tick_count[1] = 0;
+  _last_total_runtime = 0;
 
   for (int i = 0; i < MQTT_MAX_BROKERS; i++) {
     _clients[i].client = nullptr;
@@ -126,6 +132,7 @@ void MqttReporter::loop() {
   _loop_iterations++;
   uint32_t free_heap = ESP.getFreeHeap();
   if (free_heap < _min_free_heap) _min_free_heap = free_heap;
+  unsigned long now = millis();
   ensureIdentityStrings();
 
   if (WiFi.status() != WL_CONNECTED) {
@@ -161,7 +168,6 @@ void MqttReporter::loop() {
   }
 
   // Periodic status for connected brokers
-  unsigned long now = millis();
   for (int i = 0; i < MQTT_MAX_BROKERS; i++) {
     if (_clients[i].connected) {
       if (now - _clients[i].last_status_publish >= (unsigned long)MQTT_STATUS_INTERVAL_SECS * 1000UL) {
@@ -474,6 +480,23 @@ String MqttReporter::buildRadioString() const {
   return String(radio_buf);
 }
 
+void MqttReporter::appendCpuIdleStats(String &stats) const {
+  if (_idle_pct_core0 < 0.0f) {
+    stats += ",\"idle_pct_core0\":null";
+  } else {
+    stats += ",\"idle_pct_core0\":" + String(_idle_pct_core0, 1);
+  }
+#if portNUM_PROCESSORS > 1
+  if (_idle_pct_core1 < 0.0f) {
+    stats += ",\"idle_pct_core1\":null";
+  } else {
+    stats += ",\"idle_pct_core1\":" + String(_idle_pct_core1, 1);
+  }
+#else
+  stats += ",\"idle_pct_core1\":0.0";
+#endif
+}
+
 String MqttReporter::buildStatusStatsPayload(int broker_idx) const {
   String stats = "{";
   stats += "\"uptime_ms\":" + String(millis());
@@ -482,10 +505,17 @@ String MqttReporter::buildStatusStatsPayload(int broker_idx) const {
   stats += ",\"rx_publish_calls\":" + String(_rx_publish_calls);
   stats += ",\"tx_publish_calls\":" + String(_tx_publish_calls);
   stats += ",\"publish_skipped_no_connection\":" + String(_publish_skipped_no_connection);
+  stats += ",\"forward_successes\":" + String(_mesh->getForwardSuccessCount());
+  stats += ",\"forward_successes_flood\":" + String(_mesh->getForwardFloodSuccessCount());
+  stats += ",\"forward_successes_direct\":" + String(_mesh->getForwardDirectSuccessCount());
+  stats += ",\"forward_failures\":" + String(_mesh->getForwardFailureCount());
+  stats += ",\"tx_queue_depth\":" + String(_mesh->getTxQueueDepth());
+  stats += ",\"tx_queue_depth_peak\":" + String(_mesh->getTxQueuePeakDepth());
   stats += ",\"heap_free\":" + String(ESP.getFreeHeap());
   stats += ",\"heap_min_free\":" + String(ESP.getMinFreeHeap());
   stats += ",\"heap_min_seen_since_boot\":" + String(_min_free_heap);
   stats += ",\"wifi_connected\":" + String(isWiFiConnected() ? "true" : "false");
+  appendCpuIdleStats(stats);
 
   if (broker_idx >= 0 && broker_idx < MQTT_MAX_BROKERS) {
     const BrokerClient &bc = _clients[broker_idx];

@@ -524,6 +524,7 @@ void MyMesh::logTx(mesh::Packet *pkt, int len) {
 }
 
 void MyMesh::logTxFail(mesh::Packet *pkt, int len) {
+  tx_fail_count++;
   if (_logging) {
     File f = openAppend(PACKET_LOG_FILE);
     if (f) {
@@ -1187,6 +1188,8 @@ void MyMesh::clearStats() {
   radio_driver.resetStats();
   resetStats();
   ((SimpleMeshTables *)getTables())->resetStats();
+  tx_fail_count = 0;
+  tx_queue_peak_len = 0;
 }
 
 bool MyMesh::handleMqttCommand(uint32_t sender_timestamp, char *command, char *reply) {
@@ -1444,6 +1447,11 @@ void MyMesh::loop() {
   uint32_t now = millis();
   uptime_millis += now - last_millis;
   last_millis = now;
+
+  const uint32_t tx_queue_len = _mgr->getOutboundCount(0xFFFFFFFF);
+  if (tx_queue_len > tx_queue_peak_len) {
+    tx_queue_peak_len = tx_queue_len;
+  }
 }
 
 // To check if there is pending work
