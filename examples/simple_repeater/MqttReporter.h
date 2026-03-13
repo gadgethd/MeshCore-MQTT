@@ -91,6 +91,11 @@ private:
   uint32_t _wifi_reconnect_attempts;
   uint32_t _loop_iterations;
   uint32_t _min_free_heap;
+  unsigned long _last_cpu_sample_ms;
+  float _idle_pct_core0;
+  float _idle_pct_core1;
+  uint32_t _last_idle_tick_count[2];
+  uint32_t _last_total_runtime;
 
   void ensureIdentityStrings();
   void resetBrokerConnection(int idx);
@@ -106,6 +111,7 @@ private:
   String buildTimeField() const;
   String buildDateField() const;
   String buildRadioString() const;
+  void appendCpuIdleStats(String &stats) const;
   String buildStatusPayload(int broker_idx, const char *status) const;
   String buildStatusStatsPayload(int broker_idx) const;
   String buildPacketPayload(

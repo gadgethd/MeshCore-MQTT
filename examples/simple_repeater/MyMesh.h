@@ -111,6 +111,8 @@ class MyMesh : public mesh::Mesh, public CommonCLICallbacks {
   float pending_bw;
   uint8_t pending_sf;
   uint8_t pending_cr;
+  uint32_t tx_fail_count;
+  uint32_t tx_queue_peak_len;
   int  matching_peer_indexes[MAX_CLIENTS];
 #if defined(WITH_RS232_BRIDGE)
   RS232Bridge bridge;
@@ -185,6 +187,12 @@ public:
   const char* getRole() override { return FIRMWARE_ROLE; }
   const char* getNodeName() { return _prefs.node_name; }
   String buildMqttStatusStatsJson() const;
+  uint32_t getForwardSuccessCount() const { return getNumSentFlood() + getNumSentDirect(); }
+  uint32_t getForwardFloodSuccessCount() const { return getNumSentFlood(); }
+  uint32_t getForwardDirectSuccessCount() const { return getNumSentDirect(); }
+  uint32_t getForwardFailureCount() const { return tx_fail_count; }
+  uint32_t getTxQueueDepth() const { return _mgr->getOutboundCount(0xFFFFFFFF); }
+  uint32_t getTxQueuePeakDepth() const { return tx_queue_peak_len; }
   NodePrefs* getNodePrefs() {
     return &_prefs;
   }
