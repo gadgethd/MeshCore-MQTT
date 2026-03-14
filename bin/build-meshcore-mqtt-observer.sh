@@ -158,7 +158,7 @@ extra_scripts =
 build_flags =
   \${env:${base_env}.build_flags}
   -D WITH_MQTT_REPORTER=1
-  -D AUTO_OFF_MILLIS=0
+  -D AUTO_OFF_MILLIS=20000
 EOF
 }
 
