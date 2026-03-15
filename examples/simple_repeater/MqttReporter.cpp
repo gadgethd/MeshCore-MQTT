@@ -116,7 +116,7 @@ void MqttReporter::begin(FILESYSTEM *fs) {
   esp_log_level_set("esp-tls", ESP_LOG_INFO);
   WiFi.mode(WIFI_STA);
   WiFi.setAutoReconnect(true);
-  WiFi.setSleep(true);
+  WiFi.setSleep(false);
 
   const MqttSharedConfig &shared = _settings.shared();
   Serial.printf("MQTT reporter: WiFi SSID='%s'\n", shared.wifi_ssid);
@@ -297,7 +297,7 @@ void MqttReporter::resetAllConnections() {
   }
   WiFi.disconnect(true, false);
   WiFi.setAutoReconnect(true);
-  WiFi.setSleep(true);
+  WiFi.setSleep(false);
 }
 
 bool MqttReporter::connectWiFi() {
