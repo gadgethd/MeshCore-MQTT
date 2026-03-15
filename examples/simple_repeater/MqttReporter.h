@@ -82,6 +82,7 @@ private:
   String _last_rx_raw;
   unsigned long _last_wifi_attempt;
   unsigned long _last_stats_print;
+  unsigned long _last_ntp_attempt;
   bool _time_synced;
   char _origin_id[65];
   char _client_id[40];

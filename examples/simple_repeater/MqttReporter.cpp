@@ -59,6 +59,7 @@ MqttReporter::MqttReporter(MyMesh &mesh, mesh::RTCClock &clock)
     : _mesh(&mesh), _clock(&clock) {
   _last_wifi_attempt = 0;
   _last_stats_print = 0;
+  _last_ntp_attempt = 0;
   _time_synced = false;
   _origin_id[0] = '\0';
   _client_id[0] = '\0';
@@ -154,7 +155,10 @@ void MqttReporter::loop() {
   }
 
   if (!_time_synced && any_needs_sync) {
-    syncTimeFromNtp();
+    if (now - _last_ntp_attempt >= 30000UL) {
+      _last_ntp_attempt = now;
+      syncTimeFromNtp();
+    }
     if (!_time_synced) return;
   }
 
