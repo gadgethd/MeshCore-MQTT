@@ -4,6 +4,10 @@
 #include "AdvertDataHelpers.h"
 #include <RTClib.h>
 
+#ifndef BRIDGE_MAX_BAUD
+#define BRIDGE_MAX_BAUD 115200
+#endif
+
 // Believe it or not, this std C function is busted on some platforms!
 static uint32_t _atoi(const char* sp) {
   uint32_t n = 0;
@@ -72,7 +76,7 @@ static size_t packPrefs(uint8_t* buf, const NodePrefs* p) {
   WR(&p->tx_power_dbm, sizeof(p->tx_power_dbm));                 // 76
   WR(&p->disable_fwd, sizeof(p->disable_fwd));                   // 77
   WR(&p->advert_interval, sizeof(p->advert_interval));           // 78
-  WR(pad, 1);                                                     // 79
+  WR(&p->rx_boosted_gain, sizeof(p->rx_boosted_gain));           // 79
   WR(&p->rx_delay_base, sizeof(p->rx_delay_base));               // 80
   WR(&p->tx_delay_factor, sizeof(p->tx_delay_factor));           // 84
   WR(p->guest_password, sizeof(p->guest_password));               // 88
@@ -126,7 +130,7 @@ static void unpackPrefs(const uint8_t* buf, NodePrefs* p) {
   RD(&p->tx_power_dbm, sizeof(p->tx_power_dbm));                 // 76
   RD(&p->disable_fwd, sizeof(p->disable_fwd));                   // 77
   RD(&p->advert_interval, sizeof(p->advert_interval));           // 78
-  RD(pad, 1);                                                     // 79
+  RD(&p->rx_boosted_gain, sizeof(p->rx_boosted_gain));           // 79
   RD(&p->rx_delay_base, sizeof(p->rx_delay_base));               // 80
   RD(&p->tx_delay_factor, sizeof(p->tx_delay_factor));           // 84
   RD(p->guest_password, sizeof(p->guest_password));               // 88
@@ -209,13 +213,14 @@ bool CommonCLI::loadPrefsInt(FILESYSTEM* fs, const char* filename) {
   _prefs->bridge_enabled = constrain(_prefs->bridge_enabled, 0, 1);
   _prefs->bridge_delay = constrain(_prefs->bridge_delay, 0, 10000);
   _prefs->bridge_pkt_src = constrain(_prefs->bridge_pkt_src, 0, 1);
-  _prefs->bridge_baud = constrain(_prefs->bridge_baud, 9600, 115200);
+  _prefs->bridge_baud = constrain(_prefs->bridge_baud, 9600, BRIDGE_MAX_BAUD);
   _prefs->bridge_channel = constrain(_prefs->bridge_channel, 0, 14);
 
   _prefs->powersaving_enabled = constrain(_prefs->powersaving_enabled, 0, 1);
 
   _prefs->gps_enabled = constrain(_prefs->gps_enabled, 0, 1);
   _prefs->advert_loc_policy = constrain(_prefs->advert_loc_policy, 0, 2);
+  _prefs->rx_boosted_gain = constrain(_prefs->rx_boosted_gain, 0, 1); // boolean
 
   return true;
 }
@@ -394,6 +399,10 @@ void CommonCLI::handleCommand(uint32_t sender_timestamp, const char* command, ch
         sprintf(reply, "> %s", StrHelper::ftoa(_prefs->node_lat));
       } else if (memcmp(config, "lon", 3) == 0) {
         sprintf(reply, "> %s", StrHelper::ftoa(_prefs->node_lon));
+#if defined(USE_SX1262) || defined(USE_SX1268)
+      } else if (memcmp(config, "radio.rxgain", 12) == 0) {
+        sprintf(reply, "> %s", _prefs->rx_boosted_gain ? "on" : "off");
+#endif
       } else if (memcmp(config, "radio", 5) == 0) {
         char freq[16], bw[16];
         strcpy(freq, StrHelper::ftoa(_prefs->freq));
@@ -587,6 +596,13 @@ void CommonCLI::handleCommand(uint32_t sender_timestamp, const char* command, ch
         _prefs->disable_fwd = memcmp(&config[7], "off", 3) == 0;
         savePrefs();
         strcpy(reply, _prefs->disable_fwd ? "OK - repeat is now OFF" : "OK - repeat is now ON");
+#if defined(USE_SX1262) || defined(USE_SX1268)
+      } else if (memcmp(config, "radio.rxgain ", 13) == 0) {
+        _prefs->rx_boosted_gain = memcmp(&config[13], "on", 2) == 0;
+        strcpy(reply, "OK");
+        savePrefs();
+        _callbacks->setRxBoostedGain(_prefs->rx_boosted_gain);
+#endif
       } else if (memcmp(config, "radio ", 6) == 0) {
         strcpy(tmp, &config[6]);
         const char *parts[4];
@@ -721,13 +737,13 @@ void CommonCLI::handleCommand(uint32_t sender_timestamp, const char* command, ch
 #ifdef WITH_RS232_BRIDGE
       } else if (memcmp(config, "bridge.baud ", 12) == 0) {
         uint32_t baud = atoi(&config[12]);
-        if (baud >= 9600 && baud <= 115200) {
+        if (baud >= 9600 && baud <= BRIDGE_MAX_BAUD) {
           _prefs->bridge_baud = (uint32_t)baud;
           _callbacks->restartBridge();
           savePrefs();
           strcpy(reply, "OK");
         } else {
-          strcpy(reply, "Error: baud rate must be between 9600-115200");
+          sprintf(reply, "Error: baud rate must be between 9600-%d",BRIDGE_MAX_BAUD);
         }
 #endif
 #ifdef WITH_ESPNOW_BRIDGE
