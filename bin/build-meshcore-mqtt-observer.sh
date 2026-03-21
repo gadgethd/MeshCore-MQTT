@@ -103,6 +103,195 @@ print(json.dumps(segments))
 '
 }
 
+generate_main_firmware_data() {
+  local main_dir="${REPO_ROOT}/webflasher"
+  local assets_dir="${main_dir}/assets"
+  local output_file="${assets_dir}/firmware-data.js"
+
+  if [ ! -d "${main_dir}" ]; then
+    echo "Main firmware directory not found: ${main_dir}"
+    return 1
+  fi
+
+  # Ensure assets directory exists
+  mkdir -p "${assets_dir}"
+
+  echo "Generating firmware-data.js for main branch..."
+
+  # Start the JS file
+  cat > "${output_file}" <<EOF
+window.FIRMWARE_DATA = {
+  "generatedAt": "$(date -u +"%Y-%m-%dT%H:%M:%SZ")",
+  "branch": "main",
+  "boards": [
+EOF
+
+  local first=true
+  for board_dir in "${main_dir}"/*/; do
+    if [ ! -d "${board_dir}" ] || [ "$(basename "${board_dir}")" = "assets" ]; then
+      continue
+    fi
+
+    board_name=$(basename "${board_dir}")
+    manifest="${board_dir}manifest.json"
+
+    if [ ! -f "${manifest}" ]; then
+      continue
+    fi
+
+    # Extract data from manifest
+    firmware_version=$(python3 -c "import json; print(json.load(open('${manifest}'))['firmware_version'])" 2>/dev/null || echo "unknown")
+    base_env=$(python3 -c "import json; print(json.load(open('${manifest}'))['base_env'])" 2>/dev/null || echo "${board_name}")
+
+    # Get artifact filenames
+    update_bin=$(python3 -c "import json; print(json.load(open('${manifest}'))['artifacts']['update'])" 2>/dev/null || echo "")
+    full_bin=$(python3 -c "import json; print(json.load(open('${manifest}'))['artifacts']['full'])" 2>/dev/null || echo "")
+    bootloader_bin=$(python3 -c "import json; print(json.load(open('${manifest}'))['artifacts']['bootloader'])" 2>/dev/null || echo "")
+    partitions_bin=$(python3 -c "import json; print(json.load(open('${manifest}'))['artifacts']['partitions'])" 2>/dev/null || echo "")
+    boot_app0_bin=$(python3 -c "import json; print(json.load(open('${manifest}'))['artifacts']['boot_app0'])" 2>/dev/null || echo "")
+
+    # Determine chip family from board name heuristics
+    chip_family="ESP32"
+    case "${board_name}" in
+      *S3*|*s3*|*C3*|*c3*|*C6*|*c6*)
+        chip_family="ESP32-S3"
+        ;;
+      *S2*|*s2*)
+        chip_family="ESP32-S2"
+        ;;
+    esac
+
+    # Create label from board name
+    label=$(echo "${board_name}" | sed 's/_repeater$//' | sed 's/_/ /g' | sed 's/  */ /g')
+
+    if [ "${first}" = true ]; then
+      first=false
+    else
+      echo "," >> "${output_file}"
+    fi
+
+    # Include all artifacts for main
+    cat >> "${output_file}" <<EOF
+    {
+      "id": "${board_name}",
+      "label": "${label}",
+      "firmwareName": "meshcore-mqtt",
+      "firmwareVersion": "${firmware_version}",
+      "chipFamily": "${chip_family}",
+      "hardwareStatus": "Verified",
+      "manifestPath": "/firmware/${board_name}/manifest.json",
+      "artifactBase": "/firmware/${board_name}/",
+      "artifacts": {
+        "full": "${full_bin}",
+        "update": "${update_bin}",
+        "bootloader": "${bootloader_bin}",
+        "partitions": "${partitions_bin}",
+        "boot_app0": "${boot_app0_bin}"
+      }
+    }
+EOF
+  done
+
+  cat >> "${output_file}" <<EOF
+  ]
+};
+EOF
+
+  echo "Generated: ${output_file}"
+}
+
+generate_dev_firmware_data() {
+  local dev_dir="${REPO_ROOT}/webflasher/dev"
+  local assets_dir="${REPO_ROOT}/webflasher/assets"
+  local output_file="${assets_dir}/firmware-data-dev.js"
+
+  if [ ! -d "${dev_dir}" ]; then
+    echo "Dev firmware directory not found: ${dev_dir}"
+    return 1
+  fi
+
+  # Ensure assets directory exists
+  mkdir -p "${assets_dir}"
+
+  echo "Generating firmware-data-dev.js..."
+
+  # Start the JS file
+  cat > "${output_file}" <<EOF
+window.FIRMWARE_DATA = {
+  "generatedAt": "$(date -u +"%Y-%m-%dT%H:%M:%SZ")",
+  "branch": "dev",
+  "boards": [
+EOF
+
+  local first=true
+  for board_dir in "${dev_dir}"/*/; do
+    if [ ! -d "${board_dir}" ]; then
+      continue
+    fi
+
+    board_name=$(basename "${board_dir}")
+    manifest="${board_dir}manifest.json"
+
+    if [ ! -f "${manifest}" ]; then
+      continue
+    fi
+
+    # Extract data from manifest
+    firmware_version=$(python3 -c "import json; print(json.load(open('${manifest}'))['firmware_version'])" 2>/dev/null || echo "dev")
+    base_env=$(python3 -c "import json; print(json.load(open('${manifest}'))['base_env'])" 2>/dev/null || echo "${board_name}")
+
+    # Get artifact filenames
+    update_bin=$(python3 -c "import json; print(json.load(open('${manifest}'))['artifacts']['update'])" 2>/dev/null || echo "")
+    full_bin=$(python3 -c "import json; print(json.load(open('${manifest}'))['artifacts']['full'])" 2>/dev/null || echo "")
+
+    # Determine chip family from board name heuristics
+    case "${board_name}" in
+      *S3*|*s3*|*C3*|*c3*|*C6*|*c6*)
+        chip_family="ESP32-S3"
+        ;;
+      *S2*|*s2*)
+        chip_family="ESP32-S2"
+        ;;
+      *)
+        chipFamily="ESP32"
+        ;;
+    esac
+
+    # Create label from board name
+    label=$(echo "${board_name}" | sed 's/_/ /g' | sed 's/  */ /g')
+
+    if [ "${first}" = true ]; then
+      first=false
+    else
+      echo "," >> "${output_file}"
+    fi
+
+    cat >> "${output_file}" <<EOF
+    {
+      "id": "${board_name}",
+      "label": "${label}",
+      "firmwareName": "meshcore-mqtt",
+      "firmwareVersion": "${firmware_version}-dev",
+      "chipFamily": "${chipFamily:-ESP32}",
+      "hardwareStatus": "Dev build",
+      "manifestPath": "/firmware/dev/${board_name}/manifest.json",
+      "artifactBase": "/firmware/dev/${board_name}/",
+      "artifacts": {
+        "full": "${full_bin}",
+        "update": "${update_bin}"
+      }
+    }
+EOF
+  done
+
+  cat >> "${output_file}" <<EOF
+  ]
+};
+EOF
+
+  echo "Generated: ${output_file}"
+}
+
 sync_webflasher_site() {
   if [ "${WEBFLASHER_AUTO_DEPLOY}" = "0" ]; then
     return 0
@@ -212,6 +401,67 @@ prompt_value() {
   done
 }
 
+# Firmware branch selection - skip if already set by parent script
+if [ -n "${BRANCH:-}" ]; then
+  MESHCORE_MQTT_BRANCH="${BRANCH}"
+  BRANCH_SELECTED_BY_PARENT=1
+  echo "Using branch from environment: ${MESHCORE_MQTT_BRANCH}"
+else
+  BRANCH_SELECTED_BY_PARENT=0
+  echo
+  echo "=========================================="
+  echo "Firmware Branch Selection"
+  echo "=========================================="
+  echo "Choose which branch to build:"
+  echo "  1) Main (Stable) - Production firmware"
+  echo "  2) Dev (Unstable) - Development/testing firmware"
+  echo
+
+  BRANCH_CHOICE=""
+  while [ -z "${BRANCH_CHOICE}" ]; do
+    if [ ! -t 0 ]; then
+      BRANCH_CHOICE="1"
+      break
+    fi
+    printf "Enter choice [1]: "
+    read -r choice
+    case "${choice}" in
+      1|"")
+        BRANCH_CHOICE="main"
+        ;;
+      2)
+        BRANCH_CHOICE="dev"
+        ;;
+      *)
+        echo "Invalid choice. Please enter 1 or 2."
+        ;;
+    esac
+  done
+
+  MESHCORE_MQTT_BRANCH="${BRANCH_CHOICE}"
+fi
+
+echo "Selected branch: ${MESHCORE_MQTT_BRANCH}"
+echo
+
+if [ "${MESHCORE_MQTT_BRANCH}" = "dev" ] && [ "${BRANCH_SELECTED_BY_PARENT}" != "1" ]; then
+  echo "WARNING: Building DEVELOPMENT firmware!"
+  echo "This is unstable and not for production use."
+  echo
+
+  # Check if dev branch exists and switch to it
+  if git rev-parse --verify dev >/dev/null 2>&1; then
+    current_branch=$(git rev-parse --abbrev-ref HEAD 2>/dev/null || echo "")
+    if [ "${current_branch}" != "dev" ]; then
+      echo "Switching to dev branch..."
+      git checkout dev
+      echo
+    fi
+  else
+    echo "WARNING: dev branch not found locally. Building from current branch."
+  fi
+fi
+
 prompt_value MESHCORE_MQTT_ADVERT_NAME "Observer name" "MeshCore MQTT"
 prompt_value MESHCORE_MQTT_ADMIN_PASSWORD "Admin password" "password"
 prompt_value MESHCORE_MQTT_BASE_ENV "Base ESP repeater env" "${MESHCORE_MQTT_BASE_ENV:-$BASE_ENV_DEFAULT}" 0 1
@@ -260,7 +510,8 @@ APP_BIN="${BUILD_DIR}/firmware.bin"
 MERGED_BIN="${BUILD_DIR}/firmware-merged.bin"
 UPDATE_BIN="${BUILD_DIR}/firmware-update.bin"
 FULL_BIN="${BUILD_DIR}/firmware-full.bin"
-WEBFLASHER_DIR="${REPO_ROOT}/webflasher/${MESHCORE_MQTT_BASE_ENV}"
+# Include branch in output directory (main or dev)
+WEBFLASHER_DIR="${REPO_ROOT}/webflasher/${MESHCORE_MQTT_BRANCH:-main}/${MESHCORE_MQTT_BASE_ENV}"
 FIRMWARE_VERSION_NAME="$(sanitize_name "$(extract_firmware_version)")"
 if [ -z "${FIRMWARE_VERSION_NAME}" ]; then
   FIRMWARE_VERSION_NAME="unknown"
@@ -389,5 +640,12 @@ echo "  $(basename "${WEBFLASHER_FULL_BIN}")"
 echo "  $(basename "${WEBFLASHER_BOOTLOADER_BIN}")"
 echo "  $(basename "${WEBFLASHER_PARTITIONS_BIN}")"
 echo "  $(basename "${WEBFLASHER_BOOT_APP0_BIN}")"
+
+# Generate firmware-data.js for the selected branch
+if [ "${MESHCORE_MQTT_BRANCH}" = "dev" ]; then
+  generate_dev_firmware_data
+else
+  generate_main_firmware_data
+fi
 
 sync_webflasher_site
