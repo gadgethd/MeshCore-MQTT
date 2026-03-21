@@ -31,12 +31,17 @@ AutoDiscoverRTCClock rtc_clock(fallback_clock);
 bool radio_init() {
   fallback_clock.begin();
   rtc_clock.begin(Wire);
-  
+
 #if defined(P_LORA_SCLK)
-  return radio.std_init(&spi);
+  bool ok = radio.std_init(&spi);
 #else
-  return radio.std_init();
+  bool ok = radio.std_init();
 #endif
+  // std_init() sets DIO2 as RF switch from the compile-time SX126X_DIO2_AS_RF_SWITCH define
+  // (always true for the base heltec_v4 env). Override here based on the runtime-detected
+  // FEM: GC1109 (v4) uses DIO2; KCT8103L (v4.3) drives CTX on GPIO5 directly.
+  radio.setDio2AsRfSwitch(board.loRaFEMControl.getFEMType() != KCT8103L_PA);
+  return ok;
 }
 
 uint32_t radio_get_rng_seed() {

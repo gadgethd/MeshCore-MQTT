@@ -3,6 +3,27 @@
 #include <esp_sleep.h>
 #include <Arduino.h>
 
+void LoRaFEMControl::initKct8103lFem(void)
+{
+    fem_type = KCT8103L_PA;
+    pinMode(P_LORA_KCT8103L_PA_CSD, OUTPUT);
+    digitalWrite(P_LORA_KCT8103L_PA_CSD, HIGH);
+    rtc_gpio_hold_dis((gpio_num_t)P_LORA_KCT8103L_PA_CTX);
+    pinMode(P_LORA_KCT8103L_PA_CTX, OUTPUT);
+    digitalWrite(P_LORA_KCT8103L_PA_CTX, lna_enabled ? LOW : HIGH);
+    setLnaCanControl(true);
+}
+
+void LoRaFEMControl::initGc1109Fem(void)
+{
+    fem_type = GC1109_PA;
+    pinMode(P_LORA_GC1109_PA_EN, OUTPUT);
+    digitalWrite(P_LORA_GC1109_PA_EN, HIGH);
+    pinMode(P_LORA_GC1109_PA_TX_EN, OUTPUT);
+    digitalWrite(P_LORA_GC1109_PA_TX_EN, LOW);
+    setLnaCanControl(false);
+}
+
 void LoRaFEMControl::init(void)
 {
     // Power on FEM LDO — set registers before releasing RTC hold for
@@ -16,29 +37,24 @@ void LoRaFEMControl::init(void)
         delay(1);  // FEM startup time after cold power-on
     }
 
+#if defined(HELTEC_V4_FORCE_KCT8103L_PA)
+    initKct8103lFem();
+#elif defined(HELTEC_V4_FORCE_GC1109_PA)
+    initGc1109Fem();
+#else
+    // Override macros let us ship explicit v4/v4.3 images without changing default auto-detect.
     // Auto-detect FEM type via shared GPIO2 default pull level.
-    // GC1109 CSD: internal pull-down → reads LOW
-    // KCT8103L CSD: internal pull-up → reads HIGH
+    // GC1109 CSD: internal pull-down -> reads LOW
+    // KCT8103L CSD: internal pull-up -> reads HIGH
     rtc_gpio_hold_dis((gpio_num_t)P_LORA_KCT8103L_PA_CSD);
     pinMode(P_LORA_KCT8103L_PA_CSD, INPUT);
     delay(1);
-    if(digitalRead(P_LORA_KCT8103L_PA_CSD)==HIGH) {
-        // FEM is KCT8103L (V4.3)
-        fem_type= KCT8103L_PA;
-        pinMode(P_LORA_KCT8103L_PA_CSD, OUTPUT);
-        digitalWrite(P_LORA_KCT8103L_PA_CSD, HIGH);
-        rtc_gpio_hold_dis((gpio_num_t)P_LORA_KCT8103L_PA_CTX);
-        pinMode(P_LORA_KCT8103L_PA_CTX, OUTPUT);
-        digitalWrite(P_LORA_KCT8103L_PA_CTX, lna_enabled ? LOW : HIGH);
-        setLnaCanControl(true);
+    if (digitalRead(P_LORA_KCT8103L_PA_CSD) == HIGH) {
+        initKct8103lFem();
     } else {
-        // FEM is GC1109 (V4.2)
-        fem_type= GC1109_PA;
-        pinMode(P_LORA_GC1109_PA_EN, OUTPUT);
-        digitalWrite(P_LORA_GC1109_PA_EN, HIGH);
-        pinMode(P_LORA_GC1109_PA_TX_EN, OUTPUT);
-        digitalWrite(P_LORA_GC1109_PA_TX_EN, LOW);
+        initGc1109Fem();
     }
+#endif
 }
 
 void LoRaFEMControl::setSleepModeEnable(void)
