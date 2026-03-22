@@ -206,11 +206,11 @@ struct MqttBrokerConfig {
   uint8_t reserved[2];
 };
 
-// Legacy struct kept for v1 migration
+// Legacy struct kept for v1 migration (topic_root was 32 bytes in v1 format)
 struct MqttRuntimeConfig {
   char wifi_ssid[64];
   char wifi_pwd[64];
-  char topic_root[256];
+  char topic_root[32];
   char uri[128];
   char username[64];
   char password[64];
@@ -242,8 +242,28 @@ private:
     MqttRuntimeConfig config;
   };
 
-  // v2 persisted format
+  // v2 persisted format (topic_root was 32 bytes — retained for migration)
+  struct MqttBrokerConfigV2 {
+    char uri[128];
+    char username[64];
+    char password[64];
+    char topic_root[32];
+    char iata[16];
+    uint8_t retain_status;
+    uint8_t enabled;
+    uint8_t reserved[2];
+  };
   struct PersistedMqttConfigV2 {
+    uint32_t magic;
+    uint16_t version;
+    uint8_t broker_count;
+    uint8_t reserved;
+    MqttSharedConfig shared;
+    MqttBrokerConfigV2 brokers[MQTT_MAX_BROKERS];
+  };
+
+  // v3 persisted format (current — topic_root is 256 bytes)
+  struct PersistedMqttConfigV3 {
     uint32_t magic;
     uint16_t version;
     uint8_t broker_count;
@@ -257,10 +277,11 @@ private:
   MqttBrokerConfig _brokers[MQTT_MAX_BROKERS];
 
   static constexpr uint32_t CONFIG_MAGIC = 0x4D515454; // MQTT
-  static constexpr uint16_t CONFIG_VERSION = 2;
+  static constexpr uint16_t CONFIG_VERSION = 3;
   static constexpr const char *CONFIG_PATH = "/mqtt.cfg";
 
   bool loadV1(const uint8_t *data, size_t len);
+  bool loadV2(const uint8_t *data, size_t len);
 
   static void sanitizeShared(MqttSharedConfig &cfg);
   static void sanitizeBroker(MqttBrokerConfig &cfg);

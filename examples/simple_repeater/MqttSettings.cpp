@@ -41,16 +41,24 @@ bool MqttSettingsStore::load() {
     return loadV1((const uint8_t *)&v1, bytes_read);
   }
 
-  if (header.version == CONFIG_VERSION) {
+  if (header.version == 2) {
     PersistedMqttConfigV2 v2;
     size_t bytes_read = file.read((uint8_t *)&v2, sizeof(v2));
     file.close();
     if (bytes_read != sizeof(v2)) return false;
+    return loadV2((const uint8_t *)&v2, bytes_read);
+  }
 
-    _shared = v2.shared;
+  if (header.version == CONFIG_VERSION) {
+    PersistedMqttConfigV3 v3;
+    size_t bytes_read = file.read((uint8_t *)&v3, sizeof(v3));
+    file.close();
+    if (bytes_read != sizeof(v3)) return false;
+
+    _shared = v3.shared;
     sanitizeShared(_shared);
     for (int i = 0; i < MQTT_MAX_BROKERS; i++) {
-      _brokers[i] = v2.brokers[i];
+      _brokers[i] = v3.brokers[i];
       sanitizeBroker(_brokers[i]);
     }
     return true;
@@ -81,33 +89,59 @@ bool MqttSettingsStore::loadV1(const uint8_t *data, size_t len) {
   _brokers[0].enabled = 1;
   sanitizeBroker(_brokers[0]);
 
-  // Save as v2 format
+  // Save as v3 format
   save();
-  Serial.println("MQTT settings: migrated v1 -> v2");
+  Serial.println("MQTT settings: migrated v1 -> v3");
+  return true;
+}
+
+bool MqttSettingsStore::loadV2(const uint8_t *data, size_t len) {
+  if (len < sizeof(PersistedMqttConfigV2)) return false;
+  const PersistedMqttConfigV2 *v2 = (const PersistedMqttConfigV2 *)data;
+
+  _shared = v2->shared;
+  sanitizeShared(_shared);
+
+  for (int i = 0; i < MQTT_MAX_BROKERS; i++) {
+    const MqttBrokerConfigV2 &src = v2->brokers[i];
+    MqttBrokerConfig &dst = _brokers[i];
+    StrHelper::strncpy(dst.uri, src.uri, sizeof(dst.uri));
+    StrHelper::strncpy(dst.username, src.username, sizeof(dst.username));
+    StrHelper::strncpy(dst.password, src.password, sizeof(dst.password));
+    StrHelper::strncpy(dst.topic_root, src.topic_root, sizeof(dst.topic_root));
+    StrHelper::strncpy(dst.iata, src.iata, sizeof(dst.iata));
+    dst.retain_status = src.retain_status;
+    dst.enabled = src.enabled;
+    sanitizeBroker(dst);
+  }
+
+  // Save as v3 format
+  save();
+  Serial.println("MQTT settings: migrated v2 -> v3");
   return true;
 }
 
 bool MqttSettingsStore::save() {
   if (_fs == nullptr) return false;
 
-  PersistedMqttConfigV2 v2 = {};
-  v2.magic = CONFIG_MAGIC;
-  v2.version = CONFIG_VERSION;
-  v2.broker_count = (uint8_t)brokerCount();
-  v2.reserved = 0;
-  v2.shared = _shared;
-  sanitizeShared(v2.shared);
+  PersistedMqttConfigV3 v3 = {};
+  v3.magic = CONFIG_MAGIC;
+  v3.version = CONFIG_VERSION;
+  v3.broker_count = (uint8_t)brokerCount();
+  v3.reserved = 0;
+  v3.shared = _shared;
+  sanitizeShared(v3.shared);
   for (int i = 0; i < MQTT_MAX_BROKERS; i++) {
-    v2.brokers[i] = _brokers[i];
-    sanitizeBroker(v2.brokers[i]);
+    v3.brokers[i] = _brokers[i];
+    sanitizeBroker(v3.brokers[i]);
   }
 
   File file = _fs->open(CONFIG_PATH, "w");
   if (!file) return false;
 
-  size_t bytes_written = file.write((const uint8_t *)&v2, sizeof(v2));
+  size_t bytes_written = file.write((const uint8_t *)&v3, sizeof(v3));
   file.close();
-  return bytes_written == sizeof(v2);
+  return bytes_written == sizeof(v3);
 }
 
 void MqttSettingsStore::resetToDefaults() {
