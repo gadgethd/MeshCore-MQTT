@@ -16,3 +16,11 @@ cmake-*
 compile_commands.json
 .venv/
 venv/
+
+# Local AI scratch notes
+/v4-3.md
+/ai-*.md
+/*-ai.md
+/claude*.md
+/codex*.md
+/chatgpt*.md
