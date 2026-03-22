@@ -540,6 +540,7 @@ void MyMesh::logTx(mesh::Packet *pkt, int len) {
 }
 
 void MyMesh::logTxFail(mesh::Packet *pkt, int len) {
+  tx_fail_count++;
   if (_logging) {
     File f = openAppend(PACKET_LOG_FILE);
     if (f) {
@@ -1148,6 +1149,8 @@ void MyMesh::clearStats() {
   radio_driver.resetStats();
   resetStats();
   ((SimpleMeshTables *)getTables())->resetStats();
+  tx_fail_count = 0;
+  tx_queue_peak_len = 0;
 }
 
 bool MyMesh::handleMqttCommand(uint32_t sender_timestamp, char *command, char *reply) {
@@ -1158,6 +1161,31 @@ bool MyMesh::handleMqttCommand(uint32_t sender_timestamp, char *command, char *r
     } else {
       mqtt_reporter.printConfig(Serial);
       reply[0] = 0;
+    }
+    return true;
+  }
+
+  if (strcmp(command, "show mqtt stats") == 0) {
+    if (sender_timestamp != 0) {
+      strcpy(reply, "Err - serial only");
+    } else {
+      mqtt_reporter.printStats(Serial);
+      reply[0] = 0;
+    }
+    return true;
+  }
+
+  if (memcmp(command, "show mqtt stats.", 16) == 0) {
+    if (sender_timestamp != 0) {
+      strcpy(reply, "Err - serial only");
+    } else {
+      int idx = atoi(command + 16) - 1;
+      if (idx >= 0 && idx < MQTT_MAX_BROKERS) {
+        mqtt_reporter.printStats(Serial, idx);
+        reply[0] = 0;
+      } else {
+        strcpy(reply, "Err - broker 1-6");
+      }
     }
     return true;
   }
@@ -1481,6 +1509,11 @@ void MyMesh::loop() {
   uint32_t now = millis();
   uptime_millis += now - last_millis;
   last_millis = now;
+
+  const uint32_t tx_queue_len = _mgr->getOutboundCount(0xFFFFFFFF);
+  if (tx_queue_len > tx_queue_peak_len) {
+    tx_queue_peak_len = tx_queue_len;
+  }
 }
 
 // To check if there is pending work

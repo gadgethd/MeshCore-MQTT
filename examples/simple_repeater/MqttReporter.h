@@ -48,6 +48,7 @@ public:
   bool resetConfig();
   void reconnect(int broker_idx = -1);
   void printConfig(Print &out, int broker_idx = -1) const;
+  void printStats(Print &out, int broker_idx = -1) const;
 
 private:
   struct BrokerClient {
@@ -58,6 +59,14 @@ private:
     char packets_topic[384];
     String offline_payload;
     unsigned long last_status_publish;
+    uint32_t connect_attempts;
+    uint32_t connect_start_failures;
+    uint32_t connect_events;
+    uint32_t disconnect_events;
+    uint32_t error_events;
+    uint32_t status_publish_count;
+    uint32_t packet_publish_count;
+    uint32_t publish_failures;
   };
 
   struct EventContext {
@@ -72,9 +81,22 @@ private:
   EventContext _event_ctx[MQTT_MAX_BROKERS];
   String _last_rx_raw;
   unsigned long _last_wifi_attempt;
+  unsigned long _last_stats_print;
+  unsigned long _last_ntp_attempt;
   bool _time_synced;
   char _origin_id[65];
   char _client_id[40];
+  uint32_t _rx_publish_calls;
+  uint32_t _tx_publish_calls;
+  uint32_t _publish_skipped_no_connection;
+  uint32_t _wifi_reconnect_attempts;
+  uint32_t _loop_iterations;
+  uint32_t _min_free_heap;
+  unsigned long _last_cpu_sample_ms;
+  float _idle_pct_core0;
+  float _idle_pct_core1;
+  uint32_t _last_idle_tick_count[2];
+  uint32_t _last_total_runtime;
 
   void ensureIdentityStrings();
   void resetBrokerConnection(int idx);
@@ -90,7 +112,9 @@ private:
   String buildTimeField() const;
   String buildDateField() const;
   String buildRadioString() const;
-  String buildStatusPayload(const char *status) const;
+  void appendCpuIdleStats(String &stats) const;
+  String buildStatusPayload(int broker_idx, const char *status) const;
+  String buildStatusStatsPayload(int broker_idx) const;
   String buildPacketPayload(
       const char *direction,
       mesh::Packet *pkt,
@@ -103,6 +127,8 @@ private:
       bool include_radio_metrics) const;
 
   void printBrokerConfig(Print &out, int idx) const;
+  void printBrokerStats(Print &out, int idx) const;
+  void maybePrintPeriodicStats();
 
   static esp_err_t mqttEventHandler(esp_mqtt_event_handle_t event);
   static String jsonEscape(const char *input);
