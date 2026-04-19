@@ -37,6 +37,10 @@ is built. Passing env names limits the build, for example:
 
 The script does not commit or push. After it finishes, review the staged MQTT_Firmware
 files, commit them, then push the branch.
+
+The script automatically switches to the requested branch before building. If a
+fork/<branch> remote-tracking branch exists, it fast-forwards the local branch to
+that remote when possible.
 EOF
 }
 
@@ -120,6 +124,47 @@ release_file.write_text(json.dumps(release_payload, indent=2) + "\n", encoding="
 PY
 }
 
+prepare_source_branch() {
+  local current_branch
+  current_branch=$(git rev-parse --abbrev-ref HEAD)
+
+  if git remote get-url fork >/dev/null 2>&1; then
+    git fetch fork "${BRANCH}" >/dev/null 2>&1 || true
+  fi
+
+  if git show-ref --verify --quiet "refs/heads/${BRANCH}"; then
+    if [ "${current_branch}" != "${BRANCH}" ]; then
+      echo "Switching from ${current_branch} to ${BRANCH}..."
+      git switch "${BRANCH}"
+    fi
+  elif git show-ref --verify --quiet "refs/remotes/fork/${BRANCH}"; then
+    echo "Creating local ${BRANCH} from fork/${BRANCH}..."
+    git switch -c "${BRANCH}" --track "fork/${BRANCH}"
+  else
+    die "branch ${BRANCH} was not found locally or at fork/${BRANCH}"
+  fi
+
+  if git show-ref --verify --quiet "refs/remotes/fork/${BRANCH}"; then
+    local local_ref
+    local local_sha
+    local remote_sha
+    local_ref=$(git rev-parse "${BRANCH}")
+    local_sha=$(git rev-parse "${local_ref}")
+    remote_sha=$(git rev-parse "fork/${BRANCH}")
+
+    if [ "${local_sha}" != "${remote_sha}" ]; then
+      if git merge-base --is-ancestor "${local_sha}" "${remote_sha}"; then
+        echo "Fast-forwarding ${BRANCH} to fork/${BRANCH}..."
+        git merge --ff-only "fork/${BRANCH}"
+      elif git merge-base --is-ancestor "${remote_sha}" "${local_sha}"; then
+        echo "Local ${BRANCH} is ahead of fork/${BRANCH}; using local ${BRANCH}."
+      else
+        die "local ${BRANCH} and fork/${BRANCH} have diverged; resolve that before building firmware"
+      fi
+    fi
+  fi
+}
+
 while [ "$#" -gt 0 ]; do
   case "$1" in
     --version)
@@ -191,6 +236,10 @@ if [ "${ALLOW_DIRTY}" != "1" ] && ! git diff --cached --quiet --ignore-submodule
   die "tracked files have staged changes; commit/stash them or pass --allow-dirty"
 fi
 
+prepare_source_branch
+
+[ -x "${BUILD_SCRIPT}" ] || die "build script is not executable: ${BUILD_SCRIPT}"
+
 if [ "${#ENV_ARGS[@]}" -gt 0 ]; then
   ENVS=("${ENV_ARGS[@]}")
 else
@@ -210,10 +259,6 @@ BUILD_BRANCH_DIR="${REPO_ROOT}/webflasher/${BRANCH}"
 OUTPUT_BRANCH_DIR="${REPO_ROOT}/MQTT_Firmware/${BRANCH}"
 RELEASE_FILE="${OUTPUT_BRANCH_DIR}/release.json"
 LOG_ROOT="${REPO_ROOT}/.build-test/firmware-release-${SAFE_VERSION}-${BRANCH}-$(date -u +"%Y%m%d-%H%M%S")"
-
-if [ "${GIT_BRANCH}" != "${BRANCH}" ]; then
-  die "refusing to build ${BRANCH} firmware while checked out on ${GIT_BRANCH}; switch to ${BRANCH} first"
-fi
 
 cat <<EOF
 Firmware release preparation
