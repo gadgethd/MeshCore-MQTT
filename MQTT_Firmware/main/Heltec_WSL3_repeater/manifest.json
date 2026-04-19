@@ -1,0 +1,56 @@
+{
+  "base_env": "Heltec_WSL3_repeater",
+  "build_env": "Heltec_WSL3_repeater_mqtt_dynamic",
+  "firmware_name": "meshcore-mqtt",
+  "firmware_version": "v1.15.0",
+  "built_at_utc": "2026-04-19T20:23:18Z",
+  "artifacts": {
+    "update": "meshcore-mqtt-v1.15.0-Heltec_WSL3_repeater-update.bin",
+    "full": "meshcore-mqtt-v1.15.0-Heltec_WSL3_repeater-full.bin",
+    "bootloader": "meshcore-mqtt-v1.15.0-Heltec_WSL3_repeater-bootloader.bin",
+    "partitions": "meshcore-mqtt-v1.15.0-Heltec_WSL3_repeater-partitions.bin",
+    "boot_app0": "meshcore-mqtt-v1.15.0-Heltec_WSL3_repeater-boot_app0.bin"
+  },
+  "flash_offsets": {
+    "bootloader": "0x0000",
+    "partitions": "0x8000",
+    "boot_app0": "0xe000",
+    "update": "0x10000",
+    "full": "0x00000"
+  },
+  "update_segments": [
+    {
+      "name": "bootloader",
+      "path": "meshcore-mqtt-v1.15.0-Heltec_WSL3_repeater-bootloader.bin",
+      "offset": "0x0000"
+    },
+    {
+      "name": "partitions",
+      "path": "meshcore-mqtt-v1.15.0-Heltec_WSL3_repeater-partitions.bin",
+      "offset": "0x8000"
+    },
+    {
+      "name": "boot_app0",
+      "path": "meshcore-mqtt-v1.15.0-Heltec_WSL3_repeater-boot_app0.bin",
+      "offset": "0xe000"
+    },
+    {
+      "name": "firmware",
+      "path": "meshcore-mqtt-v1.15.0-Heltec_WSL3_repeater-update.bin",
+      "offset": "0x10000"
+    }
+  ],
+  "full_segments": [
+    {
+      "name": "merged",
+      "path": "meshcore-mqtt-v1.15.0-Heltec_WSL3_repeater-full.bin",
+      "offset": "0x00000"
+    }
+  ],
+  "release_version": "1.15.0_MQTT",
+  "release_branch": "main",
+  "source_git_commit": "bbe7d4ff18f018ef9fbb204e60854384f6e976d8",
+  "mqtt_client_version_marker": "meshcore-mqtt/1.15.0_MQTT+main.bbe7d4ff18f0",
+  "build_status": "passed",
+  "release_manifest": "MQTT_Firmware/main/release.json"
+}
