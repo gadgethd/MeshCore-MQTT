@@ -1,0 +1,400 @@
+{
+  "release_version": "1.15.0_MQTT",
+  "release_branch": "dev",
+  "source_git_commit": "0fcd2832cb2839ee3f8953bc23c999f68fec1209",
+  "built_at_utc": "2026-04-19T20:01:55Z",
+  "mqtt_client_version_marker": "meshcore-mqtt/1.15.0_MQTT+dev.0fcd2832cb28",
+  "passed_count": 29,
+  "failed_count": 8,
+  "passed_targets": [
+    "Generic_E22_sx1262_repeater",
+    "Generic_E22_sx1268_repeater",
+    "Heltec_ct62_repeater",
+    "Heltec_E213_repeater",
+    "Heltec_E290_repeater",
+    "Heltec_T190_repeater_",
+    "Heltec_Wireless_Tracker_repeater",
+    "heltec_tracker_v2_repeater",
+    "Heltec_v2_repeater",
+    "Heltec_v3_repeater",
+    "Heltec_WSL3_repeater",
+    "heltec_v4_repeater",
+    "heltec_v4_tft_repeater",
+    "Heltec_Wireless_Paper_repeater",
+    "LilyGo_T3S3_sx1262_repeater",
+    "LilyGo_T3S3_sx1276_repeater",
+    "LilyGo_TBeam_1W_repeater",
+    "Tbeam_SX1262_repeater",
+    "Tbeam_SX1276_repeater",
+    "T_Beam_S3_Supreme_SX1262_repeater",
+    "LilyGo_TDeck_repeater",
+    "LilyGo_TLora_V2_1_1_6_repeater",
+    "Meshadventurer_sx1262_repeater",
+    "Meshadventurer_sx1268_repeater",
+    "RAK_3112_repeater",
+    "Station_G2_repeater",
+    "Station_G2_logging_repeater",
+    "Xiao_C3_repeater",
+    "Xiao_S3_WIO_repeater"
+  ],
+  "failed_targets": [
+    "LilyGo_Tlora_C6_repeater_",
+    "M5Stack_Unit_C6L_repeater",
+    "nibble_screen_connect_repeater",
+    "Tenstar_C3_sx1262_repeater",
+    "Tenstar_C3_sx1268_repeater",
+    "Xiao_C6_repeater_",
+    "Meshimi_repeater_",
+    "WHY2025_badge_repeater_"
+  ],
+  "boards": [
+    {
+      "base_env": "Generic_E22_sx1262_repeater",
+      "firmware_version": "v1.15.0",
+      "manifest": "MQTT_Firmware/dev/Generic_E22_sx1262_repeater/manifest.json",
+      "artifacts": {
+        "boot_app0": "MQTT_Firmware/dev/Generic_E22_sx1262_repeater/meshcore-mqtt-v1.15.0-Generic_E22_sx1262_repeater-boot_app0.bin",
+        "bootloader": "MQTT_Firmware/dev/Generic_E22_sx1262_repeater/meshcore-mqtt-v1.15.0-Generic_E22_sx1262_repeater-bootloader.bin",
+        "full": "MQTT_Firmware/dev/Generic_E22_sx1262_repeater/meshcore-mqtt-v1.15.0-Generic_E22_sx1262_repeater-full.bin",
+        "partitions": "MQTT_Firmware/dev/Generic_E22_sx1262_repeater/meshcore-mqtt-v1.15.0-Generic_E22_sx1262_repeater-partitions.bin",
+        "update": "MQTT_Firmware/dev/Generic_E22_sx1262_repeater/meshcore-mqtt-v1.15.0-Generic_E22_sx1262_repeater-update.bin"
+      }
+    },
+    {
+      "base_env": "Generic_E22_sx1268_repeater",
+      "firmware_version": "v1.15.0",
+      "manifest": "MQTT_Firmware/dev/Generic_E22_sx1268_repeater/manifest.json",
+      "artifacts": {
+        "boot_app0": "MQTT_Firmware/dev/Generic_E22_sx1268_repeater/meshcore-mqtt-v1.15.0-Generic_E22_sx1268_repeater-boot_app0.bin",
+        "bootloader": "MQTT_Firmware/dev/Generic_E22_sx1268_repeater/meshcore-mqtt-v1.15.0-Generic_E22_sx1268_repeater-bootloader.bin",
+        "full": "MQTT_Firmware/dev/Generic_E22_sx1268_repeater/meshcore-mqtt-v1.15.0-Generic_E22_sx1268_repeater-full.bin",
+        "partitions": "MQTT_Firmware/dev/Generic_E22_sx1268_repeater/meshcore-mqtt-v1.15.0-Generic_E22_sx1268_repeater-partitions.bin",
+        "update": "MQTT_Firmware/dev/Generic_E22_sx1268_repeater/meshcore-mqtt-v1.15.0-Generic_E22_sx1268_repeater-update.bin"
+      }
+    },
+    {
+      "base_env": "Heltec_E213_repeater",
+      "firmware_version": "v1.15.0",
+      "manifest": "MQTT_Firmware/dev/Heltec_E213_repeater/manifest.json",
+      "artifacts": {
+        "boot_app0": "MQTT_Firmware/dev/Heltec_E213_repeater/meshcore-mqtt-v1.15.0-Heltec_E213_repeater-boot_app0.bin",
+        "bootloader": "MQTT_Firmware/dev/Heltec_E213_repeater/meshcore-mqtt-v1.15.0-Heltec_E213_repeater-bootloader.bin",
+        "full": "MQTT_Firmware/dev/Heltec_E213_repeater/meshcore-mqtt-v1.15.0-Heltec_E213_repeater-full.bin",
+        "partitions": "MQTT_Firmware/dev/Heltec_E213_repeater/meshcore-mqtt-v1.15.0-Heltec_E213_repeater-partitions.bin",
+        "update": "MQTT_Firmware/dev/Heltec_E213_repeater/meshcore-mqtt-v1.15.0-Heltec_E213_repeater-update.bin"
+      }
+    },
+    {
+      "base_env": "Heltec_E290_repeater",
+      "firmware_version": "v1.15.0",
+      "manifest": "MQTT_Firmware/dev/Heltec_E290_repeater/manifest.json",
+      "artifacts": {
+        "boot_app0": "MQTT_Firmware/dev/Heltec_E290_repeater/meshcore-mqtt-v1.15.0-Heltec_E290_repeater-boot_app0.bin",
+        "bootloader": "MQTT_Firmware/dev/Heltec_E290_repeater/meshcore-mqtt-v1.15.0-Heltec_E290_repeater-bootloader.bin",
+        "full": "MQTT_Firmware/dev/Heltec_E290_repeater/meshcore-mqtt-v1.15.0-Heltec_E290_repeater-full.bin",
+        "partitions": "MQTT_Firmware/dev/Heltec_E290_repeater/meshcore-mqtt-v1.15.0-Heltec_E290_repeater-partitions.bin",
+        "update": "MQTT_Firmware/dev/Heltec_E290_repeater/meshcore-mqtt-v1.15.0-Heltec_E290_repeater-update.bin"
+      }
+    },
+    {
+      "base_env": "Heltec_T190_repeater_",
+      "firmware_version": "v1.15.0",
+      "manifest": "MQTT_Firmware/dev/Heltec_T190_repeater_/manifest.json",
+      "artifacts": {
+        "boot_app0": "MQTT_Firmware/dev/Heltec_T190_repeater_/meshcore-mqtt-v1.15.0-Heltec_T190_repeater_-boot_app0.bin",
+        "bootloader": "MQTT_Firmware/dev/Heltec_T190_repeater_/meshcore-mqtt-v1.15.0-Heltec_T190_repeater_-bootloader.bin",
+        "full": "MQTT_Firmware/dev/Heltec_T190_repeater_/meshcore-mqtt-v1.15.0-Heltec_T190_repeater_-full.bin",
+        "partitions": "MQTT_Firmware/dev/Heltec_T190_repeater_/meshcore-mqtt-v1.15.0-Heltec_T190_repeater_-partitions.bin",
+        "update": "MQTT_Firmware/dev/Heltec_T190_repeater_/meshcore-mqtt-v1.15.0-Heltec_T190_repeater_-update.bin"
+      }
+    },
+    {
+      "base_env": "Heltec_WSL3_repeater",
+      "firmware_version": "v1.15.0",
+      "manifest": "MQTT_Firmware/dev/Heltec_WSL3_repeater/manifest.json",
+      "artifacts": {
+        "boot_app0": "MQTT_Firmware/dev/Heltec_WSL3_repeater/meshcore-mqtt-v1.15.0-Heltec_WSL3_repeater-boot_app0.bin",
+        "bootloader": "MQTT_Firmware/dev/Heltec_WSL3_repeater/meshcore-mqtt-v1.15.0-Heltec_WSL3_repeater-bootloader.bin",
+        "full": "MQTT_Firmware/dev/Heltec_WSL3_repeater/meshcore-mqtt-v1.15.0-Heltec_WSL3_repeater-full.bin",
+        "partitions": "MQTT_Firmware/dev/Heltec_WSL3_repeater/meshcore-mqtt-v1.15.0-Heltec_WSL3_repeater-partitions.bin",
+        "update": "MQTT_Firmware/dev/Heltec_WSL3_repeater/meshcore-mqtt-v1.15.0-Heltec_WSL3_repeater-update.bin"
+      }
+    },
+    {
+      "base_env": "Heltec_Wireless_Paper_repeater",
+      "firmware_version": "v1.15.0",
+      "manifest": "MQTT_Firmware/dev/Heltec_Wireless_Paper_repeater/manifest.json",
+      "artifacts": {
+        "boot_app0": "MQTT_Firmware/dev/Heltec_Wireless_Paper_repeater/meshcore-mqtt-v1.15.0-Heltec_Wireless_Paper_repeater-boot_app0.bin",
+        "bootloader": "MQTT_Firmware/dev/Heltec_Wireless_Paper_repeater/meshcore-mqtt-v1.15.0-Heltec_Wireless_Paper_repeater-bootloader.bin",
+        "full": "MQTT_Firmware/dev/Heltec_Wireless_Paper_repeater/meshcore-mqtt-v1.15.0-Heltec_Wireless_Paper_repeater-full.bin",
+        "partitions": "MQTT_Firmware/dev/Heltec_Wireless_Paper_repeater/meshcore-mqtt-v1.15.0-Heltec_Wireless_Paper_repeater-partitions.bin",
+        "update": "MQTT_Firmware/dev/Heltec_Wireless_Paper_repeater/meshcore-mqtt-v1.15.0-Heltec_Wireless_Paper_repeater-update.bin"
+      }
+    },
+    {
+      "base_env": "Heltec_Wireless_Tracker_repeater",
+      "firmware_version": "v1.15.0",
+      "manifest": "MQTT_Firmware/dev/Heltec_Wireless_Tracker_repeater/manifest.json",
+      "artifacts": {
+        "boot_app0": "MQTT_Firmware/dev/Heltec_Wireless_Tracker_repeater/meshcore-mqtt-v1.15.0-Heltec_Wireless_Tracker_repeater-boot_app0.bin",
+        "bootloader": "MQTT_Firmware/dev/Heltec_Wireless_Tracker_repeater/meshcore-mqtt-v1.15.0-Heltec_Wireless_Tracker_repeater-bootloader.bin",
+        "full": "MQTT_Firmware/dev/Heltec_Wireless_Tracker_repeater/meshcore-mqtt-v1.15.0-Heltec_Wireless_Tracker_repeater-full.bin",
+        "partitions": "MQTT_Firmware/dev/Heltec_Wireless_Tracker_repeater/meshcore-mqtt-v1.15.0-Heltec_Wireless_Tracker_repeater-partitions.bin",
+        "update": "MQTT_Firmware/dev/Heltec_Wireless_Tracker_repeater/meshcore-mqtt-v1.15.0-Heltec_Wireless_Tracker_repeater-update.bin"
+      }
+    },
+    {
+      "base_env": "Heltec_ct62_repeater",
+      "firmware_version": "v1.15.0",
+      "manifest": "MQTT_Firmware/dev/Heltec_ct62_repeater/manifest.json",
+      "artifacts": {
+        "boot_app0": "MQTT_Firmware/dev/Heltec_ct62_repeater/meshcore-mqtt-v1.15.0-Heltec_ct62_repeater-boot_app0.bin",
+        "bootloader": "MQTT_Firmware/dev/Heltec_ct62_repeater/meshcore-mqtt-v1.15.0-Heltec_ct62_repeater-bootloader.bin",
+        "full": "MQTT_Firmware/dev/Heltec_ct62_repeater/meshcore-mqtt-v1.15.0-Heltec_ct62_repeater-full.bin",
+        "partitions": "MQTT_Firmware/dev/Heltec_ct62_repeater/meshcore-mqtt-v1.15.0-Heltec_ct62_repeater-partitions.bin",
+        "update": "MQTT_Firmware/dev/Heltec_ct62_repeater/meshcore-mqtt-v1.15.0-Heltec_ct62_repeater-update.bin"
+      }
+    },
+    {
+      "base_env": "Heltec_v2_repeater",
+      "firmware_version": "v1.15.0",
+      "manifest": "MQTT_Firmware/dev/Heltec_v2_repeater/manifest.json",
+      "artifacts": {
+        "boot_app0": "MQTT_Firmware/dev/Heltec_v2_repeater/meshcore-mqtt-v1.15.0-Heltec_v2_repeater-boot_app0.bin",
+        "bootloader": "MQTT_Firmware/dev/Heltec_v2_repeater/meshcore-mqtt-v1.15.0-Heltec_v2_repeater-bootloader.bin",
+        "full": "MQTT_Firmware/dev/Heltec_v2_repeater/meshcore-mqtt-v1.15.0-Heltec_v2_repeater-full.bin",
+        "partitions": "MQTT_Firmware/dev/Heltec_v2_repeater/meshcore-mqtt-v1.15.0-Heltec_v2_repeater-partitions.bin",
+        "update": "MQTT_Firmware/dev/Heltec_v2_repeater/meshcore-mqtt-v1.15.0-Heltec_v2_repeater-update.bin"
+      }
+    },
+    {
+      "base_env": "Heltec_v3_repeater",
+      "firmware_version": "v1.15.0",
+      "manifest": "MQTT_Firmware/dev/Heltec_v3_repeater/manifest.json",
+      "artifacts": {
+        "boot_app0": "MQTT_Firmware/dev/Heltec_v3_repeater/meshcore-mqtt-v1.15.0-Heltec_v3_repeater-boot_app0.bin",
+        "bootloader": "MQTT_Firmware/dev/Heltec_v3_repeater/meshcore-mqtt-v1.15.0-Heltec_v3_repeater-bootloader.bin",
+        "full": "MQTT_Firmware/dev/Heltec_v3_repeater/meshcore-mqtt-v1.15.0-Heltec_v3_repeater-full.bin",
+        "partitions": "MQTT_Firmware/dev/Heltec_v3_repeater/meshcore-mqtt-v1.15.0-Heltec_v3_repeater-partitions.bin",
+        "update": "MQTT_Firmware/dev/Heltec_v3_repeater/meshcore-mqtt-v1.15.0-Heltec_v3_repeater-update.bin"
+      }
+    },
+    {
+      "base_env": "LilyGo_T3S3_sx1262_repeater",
+      "firmware_version": "v1.15.0",
+      "manifest": "MQTT_Firmware/dev/LilyGo_T3S3_sx1262_repeater/manifest.json",
+      "artifacts": {
+        "boot_app0": "MQTT_Firmware/dev/LilyGo_T3S3_sx1262_repeater/meshcore-mqtt-v1.15.0-LilyGo_T3S3_sx1262_repeater-boot_app0.bin",
+        "bootloader": "MQTT_Firmware/dev/LilyGo_T3S3_sx1262_repeater/meshcore-mqtt-v1.15.0-LilyGo_T3S3_sx1262_repeater-bootloader.bin",
+        "full": "MQTT_Firmware/dev/LilyGo_T3S3_sx1262_repeater/meshcore-mqtt-v1.15.0-LilyGo_T3S3_sx1262_repeater-full.bin",
+        "partitions": "MQTT_Firmware/dev/LilyGo_T3S3_sx1262_repeater/meshcore-mqtt-v1.15.0-LilyGo_T3S3_sx1262_repeater-partitions.bin",
+        "update": "MQTT_Firmware/dev/LilyGo_T3S3_sx1262_repeater/meshcore-mqtt-v1.15.0-LilyGo_T3S3_sx1262_repeater-update.bin"
+      }
+    },
+    {
+      "base_env": "LilyGo_T3S3_sx1276_repeater",
+      "firmware_version": "v1.15.0",
+      "manifest": "MQTT_Firmware/dev/LilyGo_T3S3_sx1276_repeater/manifest.json",
+      "artifacts": {
+        "boot_app0": "MQTT_Firmware/dev/LilyGo_T3S3_sx1276_repeater/meshcore-mqtt-v1.15.0-LilyGo_T3S3_sx1276_repeater-boot_app0.bin",
+        "bootloader": "MQTT_Firmware/dev/LilyGo_T3S3_sx1276_repeater/meshcore-mqtt-v1.15.0-LilyGo_T3S3_sx1276_repeater-bootloader.bin",
+        "full": "MQTT_Firmware/dev/LilyGo_T3S3_sx1276_repeater/meshcore-mqtt-v1.15.0-LilyGo_T3S3_sx1276_repeater-full.bin",
+        "partitions": "MQTT_Firmware/dev/LilyGo_T3S3_sx1276_repeater/meshcore-mqtt-v1.15.0-LilyGo_T3S3_sx1276_repeater-partitions.bin",
+        "update": "MQTT_Firmware/dev/LilyGo_T3S3_sx1276_repeater/meshcore-mqtt-v1.15.0-LilyGo_T3S3_sx1276_repeater-update.bin"
+      }
+    },
+    {
+      "base_env": "LilyGo_TBeam_1W_repeater",
+      "firmware_version": "v1.15.0",
+      "manifest": "MQTT_Firmware/dev/LilyGo_TBeam_1W_repeater/manifest.json",
+      "artifacts": {
+        "boot_app0": "MQTT_Firmware/dev/LilyGo_TBeam_1W_repeater/meshcore-mqtt-v1.15.0-LilyGo_TBeam_1W_repeater-boot_app0.bin",
+        "bootloader": "MQTT_Firmware/dev/LilyGo_TBeam_1W_repeater/meshcore-mqtt-v1.15.0-LilyGo_TBeam_1W_repeater-bootloader.bin",
+        "full": "MQTT_Firmware/dev/LilyGo_TBeam_1W_repeater/meshcore-mqtt-v1.15.0-LilyGo_TBeam_1W_repeater-full.bin",
+        "partitions": "MQTT_Firmware/dev/LilyGo_TBeam_1W_repeater/meshcore-mqtt-v1.15.0-LilyGo_TBeam_1W_repeater-partitions.bin",
+        "update": "MQTT_Firmware/dev/LilyGo_TBeam_1W_repeater/meshcore-mqtt-v1.15.0-LilyGo_TBeam_1W_repeater-update.bin"
+      }
+    },
+    {
+      "base_env": "LilyGo_TDeck_repeater",
+      "firmware_version": "v1.15.0",
+      "manifest": "MQTT_Firmware/dev/LilyGo_TDeck_repeater/manifest.json",
+      "artifacts": {
+        "boot_app0": "MQTT_Firmware/dev/LilyGo_TDeck_repeater/meshcore-mqtt-v1.15.0-LilyGo_TDeck_repeater-boot_app0.bin",
+        "bootloader": "MQTT_Firmware/dev/LilyGo_TDeck_repeater/meshcore-mqtt-v1.15.0-LilyGo_TDeck_repeater-bootloader.bin",
+        "full": "MQTT_Firmware/dev/LilyGo_TDeck_repeater/meshcore-mqtt-v1.15.0-LilyGo_TDeck_repeater-full.bin",
+        "partitions": "MQTT_Firmware/dev/LilyGo_TDeck_repeater/meshcore-mqtt-v1.15.0-LilyGo_TDeck_repeater-partitions.bin",
+        "update": "MQTT_Firmware/dev/LilyGo_TDeck_repeater/meshcore-mqtt-v1.15.0-LilyGo_TDeck_repeater-update.bin"
+      }
+    },
+    {
+      "base_env": "LilyGo_TLora_V2_1_1_6_repeater",
+      "firmware_version": "v1.15.0",
+      "manifest": "MQTT_Firmware/dev/LilyGo_TLora_V2_1_1_6_repeater/manifest.json",
+      "artifacts": {
+        "boot_app0": "MQTT_Firmware/dev/LilyGo_TLora_V2_1_1_6_repeater/meshcore-mqtt-v1.15.0-LilyGo_TLora_V2_1_1_6_repeater-boot_app0.bin",
+        "bootloader": "MQTT_Firmware/dev/LilyGo_TLora_V2_1_1_6_repeater/meshcore-mqtt-v1.15.0-LilyGo_TLora_V2_1_1_6_repeater-bootloader.bin",
+        "full": "MQTT_Firmware/dev/LilyGo_TLora_V2_1_1_6_repeater/meshcore-mqtt-v1.15.0-LilyGo_TLora_V2_1_1_6_repeater-full.bin",
+        "partitions": "MQTT_Firmware/dev/LilyGo_TLora_V2_1_1_6_repeater/meshcore-mqtt-v1.15.0-LilyGo_TLora_V2_1_1_6_repeater-partitions.bin",
+        "update": "MQTT_Firmware/dev/LilyGo_TLora_V2_1_1_6_repeater/meshcore-mqtt-v1.15.0-LilyGo_TLora_V2_1_1_6_repeater-update.bin"
+      }
+    },
+    {
+      "base_env": "Meshadventurer_sx1262_repeater",
+      "firmware_version": "v1.15.0",
+      "manifest": "MQTT_Firmware/dev/Meshadventurer_sx1262_repeater/manifest.json",
+      "artifacts": {
+        "boot_app0": "MQTT_Firmware/dev/Meshadventurer_sx1262_repeater/meshcore-mqtt-v1.15.0-Meshadventurer_sx1262_repeater-boot_app0.bin",
+        "bootloader": "MQTT_Firmware/dev/Meshadventurer_sx1262_repeater/meshcore-mqtt-v1.15.0-Meshadventurer_sx1262_repeater-bootloader.bin",
+        "full": "MQTT_Firmware/dev/Meshadventurer_sx1262_repeater/meshcore-mqtt-v1.15.0-Meshadventurer_sx1262_repeater-full.bin",
+        "partitions": "MQTT_Firmware/dev/Meshadventurer_sx1262_repeater/meshcore-mqtt-v1.15.0-Meshadventurer_sx1262_repeater-partitions.bin",
+        "update": "MQTT_Firmware/dev/Meshadventurer_sx1262_repeater/meshcore-mqtt-v1.15.0-Meshadventurer_sx1262_repeater-update.bin"
+      }
+    },
+    {
+      "base_env": "Meshadventurer_sx1268_repeater",
+      "firmware_version": "v1.15.0",
+      "manifest": "MQTT_Firmware/dev/Meshadventurer_sx1268_repeater/manifest.json",
+      "artifacts": {
+        "boot_app0": "MQTT_Firmware/dev/Meshadventurer_sx1268_repeater/meshcore-mqtt-v1.15.0-Meshadventurer_sx1268_repeater-boot_app0.bin",
+        "bootloader": "MQTT_Firmware/dev/Meshadventurer_sx1268_repeater/meshcore-mqtt-v1.15.0-Meshadventurer_sx1268_repeater-bootloader.bin",
+        "full": "MQTT_Firmware/dev/Meshadventurer_sx1268_repeater/meshcore-mqtt-v1.15.0-Meshadventurer_sx1268_repeater-full.bin",
+        "partitions": "MQTT_Firmware/dev/Meshadventurer_sx1268_repeater/meshcore-mqtt-v1.15.0-Meshadventurer_sx1268_repeater-partitions.bin",
+        "update": "MQTT_Firmware/dev/Meshadventurer_sx1268_repeater/meshcore-mqtt-v1.15.0-Meshadventurer_sx1268_repeater-update.bin"
+      }
+    },
+    {
+      "base_env": "RAK_3112_repeater",
+      "firmware_version": "v1.15.0",
+      "manifest": "MQTT_Firmware/dev/RAK_3112_repeater/manifest.json",
+      "artifacts": {
+        "boot_app0": "MQTT_Firmware/dev/RAK_3112_repeater/meshcore-mqtt-v1.15.0-RAK_3112_repeater-boot_app0.bin",
+        "bootloader": "MQTT_Firmware/dev/RAK_3112_repeater/meshcore-mqtt-v1.15.0-RAK_3112_repeater-bootloader.bin",
+        "full": "MQTT_Firmware/dev/RAK_3112_repeater/meshcore-mqtt-v1.15.0-RAK_3112_repeater-full.bin",
+        "partitions": "MQTT_Firmware/dev/RAK_3112_repeater/meshcore-mqtt-v1.15.0-RAK_3112_repeater-partitions.bin",
+        "update": "MQTT_Firmware/dev/RAK_3112_repeater/meshcore-mqtt-v1.15.0-RAK_3112_repeater-update.bin"
+      }
+    },
+    {
+      "base_env": "Station_G2_logging_repeater",
+      "firmware_version": "v1.15.0",
+      "manifest": "MQTT_Firmware/dev/Station_G2_logging_repeater/manifest.json",
+      "artifacts": {
+        "boot_app0": "MQTT_Firmware/dev/Station_G2_logging_repeater/meshcore-mqtt-v1.15.0-Station_G2_logging_repeater-boot_app0.bin",
+        "bootloader": "MQTT_Firmware/dev/Station_G2_logging_repeater/meshcore-mqtt-v1.15.0-Station_G2_logging_repeater-bootloader.bin",
+        "full": "MQTT_Firmware/dev/Station_G2_logging_repeater/meshcore-mqtt-v1.15.0-Station_G2_logging_repeater-full.bin",
+        "partitions": "MQTT_Firmware/dev/Station_G2_logging_repeater/meshcore-mqtt-v1.15.0-Station_G2_logging_repeater-partitions.bin",
+        "update": "MQTT_Firmware/dev/Station_G2_logging_repeater/meshcore-mqtt-v1.15.0-Station_G2_logging_repeater-update.bin"
+      }
+    },
+    {
+      "base_env": "Station_G2_repeater",
+      "firmware_version": "v1.15.0",
+      "manifest": "MQTT_Firmware/dev/Station_G2_repeater/manifest.json",
+      "artifacts": {
+        "boot_app0": "MQTT_Firmware/dev/Station_G2_repeater/meshcore-mqtt-v1.15.0-Station_G2_repeater-boot_app0.bin",
+        "bootloader": "MQTT_Firmware/dev/Station_G2_repeater/meshcore-mqtt-v1.15.0-Station_G2_repeater-bootloader.bin",
+        "full": "MQTT_Firmware/dev/Station_G2_repeater/meshcore-mqtt-v1.15.0-Station_G2_repeater-full.bin",
+        "partitions": "MQTT_Firmware/dev/Station_G2_repeater/meshcore-mqtt-v1.15.0-Station_G2_repeater-partitions.bin",
+        "update": "MQTT_Firmware/dev/Station_G2_repeater/meshcore-mqtt-v1.15.0-Station_G2_repeater-update.bin"
+      }
+    },
+    {
+      "base_env": "T_Beam_S3_Supreme_SX1262_repeater",
+      "firmware_version": "v1.15.0",
+      "manifest": "MQTT_Firmware/dev/T_Beam_S3_Supreme_SX1262_repeater/manifest.json",
+      "artifacts": {
+        "boot_app0": "MQTT_Firmware/dev/T_Beam_S3_Supreme_SX1262_repeater/meshcore-mqtt-v1.15.0-T_Beam_S3_Supreme_SX1262_repeater-boot_app0.bin",
+        "bootloader": "MQTT_Firmware/dev/T_Beam_S3_Supreme_SX1262_repeater/meshcore-mqtt-v1.15.0-T_Beam_S3_Supreme_SX1262_repeater-bootloader.bin",
+        "full": "MQTT_Firmware/dev/T_Beam_S3_Supreme_SX1262_repeater/meshcore-mqtt-v1.15.0-T_Beam_S3_Supreme_SX1262_repeater-full.bin",
+        "partitions": "MQTT_Firmware/dev/T_Beam_S3_Supreme_SX1262_repeater/meshcore-mqtt-v1.15.0-T_Beam_S3_Supreme_SX1262_repeater-partitions.bin",
+        "update": "MQTT_Firmware/dev/T_Beam_S3_Supreme_SX1262_repeater/meshcore-mqtt-v1.15.0-T_Beam_S3_Supreme_SX1262_repeater-update.bin"
+      }
+    },
+    {
+      "base_env": "Tbeam_SX1262_repeater",
+      "firmware_version": "v1.15.0",
+      "manifest": "MQTT_Firmware/dev/Tbeam_SX1262_repeater/manifest.json",
+      "artifacts": {
+        "boot_app0": "MQTT_Firmware/dev/Tbeam_SX1262_repeater/meshcore-mqtt-v1.15.0-Tbeam_SX1262_repeater-boot_app0.bin",
+        "bootloader": "MQTT_Firmware/dev/Tbeam_SX1262_repeater/meshcore-mqtt-v1.15.0-Tbeam_SX1262_repeater-bootloader.bin",
+        "full": "MQTT_Firmware/dev/Tbeam_SX1262_repeater/meshcore-mqtt-v1.15.0-Tbeam_SX1262_repeater-full.bin",
+        "partitions": "MQTT_Firmware/dev/Tbeam_SX1262_repeater/meshcore-mqtt-v1.15.0-Tbeam_SX1262_repeater-partitions.bin",
+        "update": "MQTT_Firmware/dev/Tbeam_SX1262_repeater/meshcore-mqtt-v1.15.0-Tbeam_SX1262_repeater-update.bin"
+      }
+    },
+    {
+      "base_env": "Tbeam_SX1276_repeater",
+      "firmware_version": "v1.15.0",
+      "manifest": "MQTT_Firmware/dev/Tbeam_SX1276_repeater/manifest.json",
+      "artifacts": {
+        "boot_app0": "MQTT_Firmware/dev/Tbeam_SX1276_repeater/meshcore-mqtt-v1.15.0-Tbeam_SX1276_repeater-boot_app0.bin",
+        "bootloader": "MQTT_Firmware/dev/Tbeam_SX1276_repeater/meshcore-mqtt-v1.15.0-Tbeam_SX1276_repeater-bootloader.bin",
+        "full": "MQTT_Firmware/dev/Tbeam_SX1276_repeater/meshcore-mqtt-v1.15.0-Tbeam_SX1276_repeater-full.bin",
+        "partitions": "MQTT_Firmware/dev/Tbeam_SX1276_repeater/meshcore-mqtt-v1.15.0-Tbeam_SX1276_repeater-partitions.bin",
+        "update": "MQTT_Firmware/dev/Tbeam_SX1276_repeater/meshcore-mqtt-v1.15.0-Tbeam_SX1276_repeater-update.bin"
+      }
+    },
+    {
+      "base_env": "Xiao_C3_repeater",
+      "firmware_version": "v1.15.0",
+      "manifest": "MQTT_Firmware/dev/Xiao_C3_repeater/manifest.json",
+      "artifacts": {
+        "boot_app0": "MQTT_Firmware/dev/Xiao_C3_repeater/meshcore-mqtt-v1.15.0-Xiao_C3_repeater-boot_app0.bin",
+        "bootloader": "MQTT_Firmware/dev/Xiao_C3_repeater/meshcore-mqtt-v1.15.0-Xiao_C3_repeater-bootloader.bin",
+        "full": "MQTT_Firmware/dev/Xiao_C3_repeater/meshcore-mqtt-v1.15.0-Xiao_C3_repeater-full.bin",
+        "partitions": "MQTT_Firmware/dev/Xiao_C3_repeater/meshcore-mqtt-v1.15.0-Xiao_C3_repeater-partitions.bin",
+        "update": "MQTT_Firmware/dev/Xiao_C3_repeater/meshcore-mqtt-v1.15.0-Xiao_C3_repeater-update.bin"
+      }
+    },
+    {
+      "base_env": "Xiao_S3_WIO_repeater",
+      "firmware_version": "v1.15.0",
+      "manifest": "MQTT_Firmware/dev/Xiao_S3_WIO_repeater/manifest.json",
+      "artifacts": {
+        "boot_app0": "MQTT_Firmware/dev/Xiao_S3_WIO_repeater/meshcore-mqtt-v1.15.0-Xiao_S3_WIO_repeater-boot_app0.bin",
+        "bootloader": "MQTT_Firmware/dev/Xiao_S3_WIO_repeater/meshcore-mqtt-v1.15.0-Xiao_S3_WIO_repeater-bootloader.bin",
+        "full": "MQTT_Firmware/dev/Xiao_S3_WIO_repeater/meshcore-mqtt-v1.15.0-Xiao_S3_WIO_repeater-full.bin",
+        "partitions": "MQTT_Firmware/dev/Xiao_S3_WIO_repeater/meshcore-mqtt-v1.15.0-Xiao_S3_WIO_repeater-partitions.bin",
+        "update": "MQTT_Firmware/dev/Xiao_S3_WIO_repeater/meshcore-mqtt-v1.15.0-Xiao_S3_WIO_repeater-update.bin"
+      }
+    },
+    {
+      "base_env": "heltec_tracker_v2_repeater",
+      "firmware_version": "v1.15.0",
+      "manifest": "MQTT_Firmware/dev/heltec_tracker_v2_repeater/manifest.json",
+      "artifacts": {
+        "boot_app0": "MQTT_Firmware/dev/heltec_tracker_v2_repeater/meshcore-mqtt-v1.15.0-heltec_tracker_v2_repeater-boot_app0.bin",
+        "bootloader": "MQTT_Firmware/dev/heltec_tracker_v2_repeater/meshcore-mqtt-v1.15.0-heltec_tracker_v2_repeater-bootloader.bin",
+        "full": "MQTT_Firmware/dev/heltec_tracker_v2_repeater/meshcore-mqtt-v1.15.0-heltec_tracker_v2_repeater-full.bin",
+        "partitions": "MQTT_Firmware/dev/heltec_tracker_v2_repeater/meshcore-mqtt-v1.15.0-heltec_tracker_v2_repeater-partitions.bin",
+        "update": "MQTT_Firmware/dev/heltec_tracker_v2_repeater/meshcore-mqtt-v1.15.0-heltec_tracker_v2_repeater-update.bin"
+      }
+    },
+    {
+      "base_env": "heltec_v4_repeater",
+      "firmware_version": "v1.15.0",
+      "manifest": "MQTT_Firmware/dev/heltec_v4_repeater/manifest.json",
+      "artifacts": {
+        "boot_app0": "MQTT_Firmware/dev/heltec_v4_repeater/meshcore-mqtt-v1.15.0-heltec_v4_repeater-boot_app0.bin",
+        "bootloader": "MQTT_Firmware/dev/heltec_v4_repeater/meshcore-mqtt-v1.15.0-heltec_v4_repeater-bootloader.bin",
+        "full": "MQTT_Firmware/dev/heltec_v4_repeater/meshcore-mqtt-v1.15.0-heltec_v4_repeater-full.bin",
+        "partitions": "MQTT_Firmware/dev/heltec_v4_repeater/meshcore-mqtt-v1.15.0-heltec_v4_repeater-partitions.bin",
+        "update": "MQTT_Firmware/dev/heltec_v4_repeater/meshcore-mqtt-v1.15.0-heltec_v4_repeater-update.bin"
+      }
+    },
+    {
+      "base_env": "heltec_v4_tft_repeater",
+      "firmware_version": "v1.15.0",
+      "manifest": "MQTT_Firmware/dev/heltec_v4_tft_repeater/manifest.json",
+      "artifacts": {
+        "boot_app0": "MQTT_Firmware/dev/heltec_v4_tft_repeater/meshcore-mqtt-v1.15.0-heltec_v4_tft_repeater-boot_app0.bin",
+        "bootloader": "MQTT_Firmware/dev/heltec_v4_tft_repeater/meshcore-mqtt-v1.15.0-heltec_v4_tft_repeater-bootloader.bin",
+        "full": "MQTT_Firmware/dev/heltec_v4_tft_repeater/meshcore-mqtt-v1.15.0-heltec_v4_tft_repeater-full.bin",
+        "partitions": "MQTT_Firmware/dev/heltec_v4_tft_repeater/meshcore-mqtt-v1.15.0-heltec_v4_tft_repeater-partitions.bin",
+        "update": "MQTT_Firmware/dev/heltec_v4_tft_repeater/meshcore-mqtt-v1.15.0-heltec_v4_tft_repeater-update.bin"
+      }
+    }
+  ]
+}

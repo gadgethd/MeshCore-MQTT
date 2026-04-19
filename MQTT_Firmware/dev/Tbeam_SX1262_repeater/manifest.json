@@ -1,0 +1,56 @@
+{
+  "base_env": "Tbeam_SX1262_repeater",
+  "build_env": "Tbeam_SX1262_repeater_mqtt_dynamic",
+  "firmware_name": "meshcore-mqtt",
+  "firmware_version": "v1.15.0",
+  "built_at_utc": "2026-04-19T20:01:55Z",
+  "artifacts": {
+    "update": "meshcore-mqtt-v1.15.0-Tbeam_SX1262_repeater-update.bin",
+    "full": "meshcore-mqtt-v1.15.0-Tbeam_SX1262_repeater-full.bin",
+    "bootloader": "meshcore-mqtt-v1.15.0-Tbeam_SX1262_repeater-bootloader.bin",
+    "partitions": "meshcore-mqtt-v1.15.0-Tbeam_SX1262_repeater-partitions.bin",
+    "boot_app0": "meshcore-mqtt-v1.15.0-Tbeam_SX1262_repeater-boot_app0.bin"
+  },
+  "flash_offsets": {
+    "bootloader": "0x1000",
+    "partitions": "0x8000",
+    "boot_app0": "0xe000",
+    "update": "0x10000",
+    "full": "0x00000"
+  },
+  "update_segments": [
+    {
+      "name": "bootloader",
+      "path": "meshcore-mqtt-v1.15.0-Tbeam_SX1262_repeater-bootloader.bin",
+      "offset": "0x1000"
+    },
+    {
+      "name": "partitions",
+      "path": "meshcore-mqtt-v1.15.0-Tbeam_SX1262_repeater-partitions.bin",
+      "offset": "0x8000"
+    },
+    {
+      "name": "boot_app0",
+      "path": "meshcore-mqtt-v1.15.0-Tbeam_SX1262_repeater-boot_app0.bin",
+      "offset": "0xe000"
+    },
+    {
+      "name": "firmware",
+      "path": "meshcore-mqtt-v1.15.0-Tbeam_SX1262_repeater-update.bin",
+      "offset": "0x10000"
+    }
+  ],
+  "full_segments": [
+    {
+      "name": "merged",
+      "path": "meshcore-mqtt-v1.15.0-Tbeam_SX1262_repeater-full.bin",
+      "offset": "0x00000"
+    }
+  ],
+  "release_version": "1.15.0_MQTT",
+  "release_branch": "dev",
+  "source_git_commit": "0fcd2832cb2839ee3f8953bc23c999f68fec1209",
+  "mqtt_client_version_marker": "meshcore-mqtt/1.15.0_MQTT+dev.0fcd2832cb28",
+  "build_status": "passed",
+  "release_manifest": "MQTT_Firmware/dev/release.json"
+}
