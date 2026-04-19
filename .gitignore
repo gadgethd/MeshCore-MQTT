@@ -24,3 +24,4 @@ venv/
 /claude*.md
 /codex*.md
 /chatgpt*.md
+platformio.local.ini
