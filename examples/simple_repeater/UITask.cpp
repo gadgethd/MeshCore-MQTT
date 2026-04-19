@@ -7,6 +7,10 @@
   extern MqttReporter mqtt_reporter;
 #endif
 
+#ifndef USER_BTN_PRESSED
+  #define USER_BTN_PRESSED LOW
+#endif
+
 #ifndef AUTO_OFF_MILLIS
   #define AUTO_OFF_MILLIS      20000  // 20 seconds
 #endif
@@ -103,7 +107,7 @@ void UITask::loop() {
   if (millis() >= _next_read) {
     int btnState = digitalRead(PIN_USER_BTN);
     if (btnState != _prevBtnState) {
-      if (btnState == LOW) {  // pressed?
+      if (btnState == USER_BTN_PRESSED) {  // pressed?
         if (_display->isOn()) {
           // TODO: any action ?
         } else {
