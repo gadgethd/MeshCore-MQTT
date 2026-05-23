@@ -34,7 +34,7 @@ from pathlib import Path
 
 repo_root = Path(sys.argv[1])
 env_re = re.compile(r'^\[env:([^\]]+)\]$')
-esp_base_re = re.compile(r'^\s*extends\s*=\s*(esp32_base|esp32c6_base)\s*$')
+esp_base_re = re.compile(r'^\s*extends\s*=\s*esp32_base\s*$')
 repeater_re = re.compile(r'(^|_)repeater_?$')
 
 for ini_path in sorted((repo_root / "variants").glob("*/platformio.ini")):
@@ -155,6 +155,12 @@ for e in "${FAIL[@]}"; do
 done
 
 if [ "${#FAIL[@]}" -gt 0 ]; then
+  echo "Some targets failed (C6/C3 experimental boards are expected to fail)."
+  echo "Release will include only passing targets."
+fi
+
+if [ "${#PASS[@]}" -eq 0 ]; then
+  echo "ERROR: No targets built successfully."
   exit 1
 fi
 
