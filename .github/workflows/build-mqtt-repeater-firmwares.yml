@@ -57,4 +57,4 @@ jobs:
             mqtt reconnect 1
             ```
           draft: true
-          files: out/*/meshcore-mqtt-*.bin
+          files: out/**/*.bin
