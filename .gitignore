@@ -22,6 +22,7 @@ platformio.local.ini
 /v4-3.md
 /ai-*.md
 /*-ai.md
+/AGENTS.md
 /claude*.md
 /codex*.md
 /chatgpt*.md
