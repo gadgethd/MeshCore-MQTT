@@ -1195,72 +1195,50 @@ void MyMesh::clearStats() {
 bool MyMesh::handleMqttCommand(uint32_t sender_timestamp, char *command, char *reply) {
 #if defined(ESP32) && defined(WITH_MQTT_REPORTER)
   if (strcmp(command, "show mqtt") == 0 || strcmp(command, "get mqtt") == 0) {
-    if (sender_timestamp != 0) {
-      strcpy(reply, "Err - serial only");
-    } else {
-      mqtt_reporter.printConfig(Serial);
-      reply[0] = 0;
-    }
+    mqtt_reporter.printConfig(Serial);
+    reply[0] = 0;
     return true;
   }
 
   if (strcmp(command, "show mqtt stats") == 0) {
-    if (sender_timestamp != 0) {
-      strcpy(reply, "Err - serial only");
-    } else {
-      mqtt_reporter.printStats(Serial);
-      reply[0] = 0;
-    }
+    mqtt_reporter.printStats(Serial);
+    reply[0] = 0;
     return true;
   }
 
   if (memcmp(command, "show mqtt stats.", 16) == 0) {
-    if (sender_timestamp != 0) {
-      strcpy(reply, "Err - serial only");
+    int idx = atoi(command + 16) - 1;
+    if (idx >= 0 && idx < MQTT_MAX_BROKERS) {
+      mqtt_reporter.printStats(Serial, idx);
+      reply[0] = 0;
     } else {
-      int idx = atoi(command + 16) - 1;
-      if (idx >= 0 && idx < MQTT_MAX_BROKERS) {
-        mqtt_reporter.printStats(Serial, idx);
-        reply[0] = 0;
-      } else {
-        strcpy(reply, "Err - broker 1-6");
-      }
+      strcpy(reply, "Err - broker 1-6");
     }
     return true;
   }
 
   // "show mqtt.N" — show a single broker
   if (memcmp(command, "show mqtt.", 10) == 0) {
-    if (sender_timestamp != 0) {
-      strcpy(reply, "Err - serial only");
+    int idx = atoi(command + 10) - 1;
+    if (idx >= 0 && idx < MQTT_MAX_BROKERS) {
+      mqtt_reporter.printConfig(Serial, idx);
+      reply[0] = 0;
     } else {
-      int idx = atoi(command + 10) - 1;
-      if (idx >= 0 && idx < MQTT_MAX_BROKERS) {
-        mqtt_reporter.printConfig(Serial, idx);
-        reply[0] = 0;
-      } else {
-        strcpy(reply, "Err - broker 1-6");
-      }
+      strcpy(reply, "Err - broker 1-6");
     }
     return true;
   }
 
   if (memcmp(command, "mqtt reconnect", 14) == 0) {
-    if (sender_timestamp != 0) {
-      strcpy(reply, "Err - serial only");
-    } else {
-      int idx = -1;
-      if (command[14] == ' ') idx = atoi(command + 15) - 1;
-      mqtt_reporter.reconnect(idx);
-      strcpy(reply, "OK");
-    }
+    int idx = -1;
+    if (command[14] == ' ') idx = atoi(command + 15) - 1;
+    mqtt_reporter.reconnect(idx);
+    strcpy(reply, "OK");
     return true;
   }
 
   if (strcmp(command, "mqtt reset") == 0) {
-    if (sender_timestamp != 0) {
-      strcpy(reply, "Err - serial only");
-    } else if (mqtt_reporter.resetConfig()) {
+    if (mqtt_reporter.resetConfig()) {
       strcpy(reply, "OK");
     } else {
       strcpy(reply, "Err - save failed");
@@ -1269,11 +1247,6 @@ bool MyMesh::handleMqttCommand(uint32_t sender_timestamp, char *command, char *r
   }
 
   if (memcmp(command, "get mqtt.", 9) == 0) {
-    if (sender_timestamp != 0) {
-      strcpy(reply, "Err - serial only");
-      return true;
-    }
-
     char value[160];
     if (mqtt_reporter.getConfigValue(command + 9, value, sizeof(value))) {
       snprintf(reply, 160, "> %s", value);
@@ -1284,11 +1257,6 @@ bool MyMesh::handleMqttCommand(uint32_t sender_timestamp, char *command, char *r
   }
 
   if (memcmp(command, "set mqtt.", 9) == 0) {
-    if (sender_timestamp != 0) {
-      strcpy(reply, "Err - serial only");
-      return true;
-    }
-
     char *key = command + 9;
     char *value = strchr(key, ' ');
     if (value == NULL) {
