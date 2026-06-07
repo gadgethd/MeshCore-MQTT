@@ -92,6 +92,9 @@ private:
   uint32_t _wifi_reconnect_attempts;
   uint32_t _loop_iterations;
   uint32_t _min_free_heap;
+  int _last_wifi_disconnect_reason;
+  bool _wifi_got_ip;
+  String _wifi_last_ip;
   unsigned long _last_cpu_sample_ms;
   float _idle_pct_core0;
   float _idle_pct_core1;
@@ -134,6 +137,7 @@ private:
   static String jsonEscape(const char *input);
   static String bytesToHex(const uint8_t *data, size_t len);
   static bool shouldIncludePath(const mesh::Packet *pkt);
+  static MqttReporter *s_instance;
 };
 
 #endif
