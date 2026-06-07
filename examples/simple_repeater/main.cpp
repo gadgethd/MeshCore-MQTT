@@ -169,6 +169,9 @@ void loop() {
 
   the_mesh.loop();
   sensors.loop();
+#if defined(ESP32) && defined(WITH_MQTT_REPORTER)
+  mqtt_reporter.loop();
+#endif
 #ifdef DISPLAY_CLASS
   ui_task.loop();
 #endif
