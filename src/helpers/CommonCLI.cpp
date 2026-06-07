@@ -278,6 +278,198 @@ uint8_t CommonCLI::buildAdvertData(uint8_t node_type, uint8_t* app_data) {
   }
 }
 
+static char* skipSpaces(char* s) {
+  while (*s == ' ') s++;
+  return s;
+}
+
+static void rtrimSpaces(char* s) {
+  char* e = s + strlen(s);
+  while (e > s && e[-1] == ' ') *--e = '\0';
+}
+
+static char* takeToken(char** cursor) {
+  char* p = skipSpaces(*cursor);
+  if (*p == '\0') { *cursor = p; return nullptr; }
+  char* tok = p;
+  while (*p && *p != ' ') p++;
+  if (*p) *p++ = '\0';
+  *cursor = p;
+  return tok;
+}
+
+static char* splitNameJump(char* tok) {
+  for (char* q = tok; *q; q++) {
+    if (*q == '|' || *q == ',') {
+      *q = '\0';
+      char* jump = skipSpaces(q + 1);
+      rtrimSpaces(jump);
+      return jump;
+    }
+  }
+  return nullptr;
+}
+
+static bool processRegionDefSegment(RegionMap* map, char* tok, RegionEntry** cursor, char* reply) {
+  char* jump = splitNameJump(tok);
+  char* name = skipSpaces(tok);
+  if (*name == '\0') { snprintf(reply, 160, "Err - empty name"); return false; }
+  if (jump && *jump == '\0') { snprintf(reply, 160, "Err - empty jump"); return false; }
+
+  RegionEntry* r = map->putRegion(name, (*cursor)->id);
+  if (r == NULL) { snprintf(reply, 160, "Err - put failed: %s", name); return false; }
+  r->flags = 0;
+
+  if (jump) {
+    RegionEntry* j = map->findByNamePrefix(jump);
+    if (j == NULL) { snprintf(reply, 160, "Err - unknown jump: %s", jump); return false; }
+    *cursor = j;
+  } else {
+    *cursor = r;
+  }
+  return true;
+}
+
+void CommonCLI::handleRegionCmd(char* command, char* reply) {
+  reply[0] = 0;
+
+  // `region def`: must run before parseTextParts mutates the buffer
+  char* cmd = skipSpaces(command);
+  if (strncmp(cmd, "region def", 10) == 0 && (cmd[10] == ' ' || cmd[10] == '\0')) {
+    char* payload = skipSpaces(cmd + 10);
+    rtrimSpaces(payload);
+    if (*payload == '\0') { snprintf(reply, 160, "Err - empty def"); return; }
+
+    RegionEntry* cursor = &_region_map->getWildcard();
+    for (char* tok; (tok = takeToken(&payload)) != nullptr; ) {
+      if (!processRegionDefSegment(_region_map, tok, &cursor, reply)) return;
+    }
+    _region_map->exportTo(reply, 160);
+    return;
+  }
+
+  const char* parts[4];
+  int n = mesh::Utils::parseTextParts(command, parts, 4, ' ');
+  if (n == 1) {
+    _region_map->exportTo(reply, 160);
+  } else if (n >= 2 && strcmp(parts[1], "load") == 0) {
+    _callbacks->startRegionsLoad();
+  } else if (n >= 2 && strcmp(parts[1], "save") == 0) {
+    _prefs->discovery_mod_timestamp = getRTCClock()->getCurrentTime();   // this node is now 'modified' (for discovery info)
+    savePrefs();
+    bool success = _callbacks->saveRegions();
+    strcpy(reply, success ? "OK" : "Err - save failed");
+  } else if (n >= 3 && strcmp(parts[1], "allowf") == 0) {
+    auto region = _region_map->findByNamePrefix(parts[2]);
+    if (region) {
+      region->flags &= ~REGION_DENY_FLOOD;
+      strcpy(reply, "OK");
+    } else {
+      strcpy(reply, "Err - unknown region");
+    }
+  } else if (n >= 3 && strcmp(parts[1], "denyf") == 0) {
+    auto region = _region_map->findByNamePrefix(parts[2]);
+    if (region) {
+      region->flags |= REGION_DENY_FLOOD;
+      strcpy(reply, "OK");
+    } else {
+      strcpy(reply, "Err - unknown region");
+    }
+  } else if (n >= 3 && strcmp(parts[1], "get") == 0) {
+    auto region = _region_map->findByNamePrefix(parts[2]);
+    if (region) {
+      auto parent = _region_map->findById(region->parent);
+      if (parent && parent->id != 0) {
+        sprintf(reply, " %s (%s) %s", region->name, parent->name, (region->flags & REGION_DENY_FLOOD) ? "" : "F");
+      } else {
+        sprintf(reply, " %s %s", region->name, (region->flags & REGION_DENY_FLOOD) ? "" : "F");
+      }
+    } else {
+      strcpy(reply, "Err - unknown region");
+    }
+  } else if (n >= 3 && strcmp(parts[1], "home") == 0) {
+    auto home = _region_map->findByNamePrefix(parts[2]);
+    if (home) {
+      _region_map->setHomeRegion(home);
+      sprintf(reply, " home is now %s", home->name);
+    } else {
+      strcpy(reply, "Err - unknown region");
+    }
+  } else if (n == 2 && strcmp(parts[1], "home") == 0) {
+    auto home = _region_map->getHomeRegion();
+    sprintf(reply, " home is %s", home ? home->name : "*");
+  } else if (n >= 3 && strcmp(parts[1], "default") == 0) {
+    if (strcmp(parts[2], "<null>") == 0) {
+      _region_map->setDefaultRegion(NULL);
+      _callbacks->onDefaultRegionChanged(NULL);
+      _callbacks->saveRegions();  // persist in one atomic step
+      sprintf(reply, " default scope is now <null>");
+    } else {
+      auto def = _region_map->findByNamePrefix(parts[2]);
+      if (def == NULL) {
+        def = _region_map->putRegion(parts[2], 0);  // auto-create the default region
+      }
+      if (def) {
+        def->flags = 0;   // make sure allow flood enabled
+        _region_map->setDefaultRegion(def);
+        _callbacks->onDefaultRegionChanged(def);
+        _callbacks->saveRegions();  // persist in one atomic step
+        sprintf(reply, " default scope is now %s", def->name);
+      } else {
+        strcpy(reply, "Err - region table full");
+      }
+    }
+  } else if (n == 2 && strcmp(parts[1], "default") == 0) {
+    auto def = _region_map->getDefaultRegion();
+    sprintf(reply, " default scope is %s", def ? def->name : "<null>");
+  } else if (n >= 3 && strcmp(parts[1], "put") == 0) {
+    auto parent = n >= 4 ? _region_map->findByNamePrefix(parts[3]) : &(_region_map->getWildcard());
+    if (parent == NULL) {
+      strcpy(reply, "Err - unknown parent");
+    } else {
+      auto region = _region_map->putRegion(parts[2], parent->id);
+      if (region == NULL) {
+        strcpy(reply, "Err - unable to put");
+      } else {
+        region->flags = 0;   // New default: enable flood
+        strcpy(reply, "OK - (flood allowed)");
+      }
+    }
+  } else if (n >= 3 && strcmp(parts[1], "remove") == 0) {
+    auto region = _region_map->findByName(parts[2]);
+    if (region) {
+      if (_region_map->removeRegion(*region)) {
+        strcpy(reply, "OK");
+      } else {
+        strcpy(reply, "Err - not empty");
+      }
+    } else {
+      strcpy(reply, "Err - not found");
+    }
+  } else if (n >= 3 && strcmp(parts[1], "list") == 0) {
+    uint8_t mask = 0;
+    bool invert = false;
+
+    if (strcmp(parts[2], "allowed") == 0) {
+      mask = REGION_DENY_FLOOD;
+      invert = false;  // list regions that DON'T have DENY flag
+    } else if (strcmp(parts[2], "denied") == 0) {
+      mask = REGION_DENY_FLOOD;
+      invert = true;   // list regions that DO have DENY flag
+    } else {
+      strcpy(reply, "Err - use 'allowed' or 'denied'");
+      return;
+    }
+
+    int len = _region_map->exportNamesTo(reply, 160, mask, invert);
+    if (len == 0) {
+      strcpy(reply, "-none-");
+    }
+  } else {
+    strcpy(reply, "Err - ??");
+  }
+}
+
 void CommonCLI::handleCommand(uint32_t sender_timestamp, const char* command, char* reply) {
     if (memcmp(command, "poweroff", 8) == 0 || memcmp(command, "shutdown", 8) == 0) {
       _board->powerOff();  // doesn't return
@@ -360,6 +552,11 @@ void CommonCLI::handleCommand(uint32_t sender_timestamp, const char* command, ch
     } else if (memcmp(command, "clear stats", 11) == 0) {
       _callbacks->clearStats();
       strcpy(reply, "(OK - stats reset)");
+    } else if (memcmp(command, "region", 6) == 0 && (command[6] == 0 || command[6] == ' ')) {
+      // handleRegionCmd mutates the buffer (parseTextParts), so copy out of the const input
+      char region_cmd[160];
+      StrHelper::strncpy(region_cmd, command, sizeof(region_cmd));
+      handleRegionCmd(region_cmd, reply);
     /*
      * GET commands
      */
