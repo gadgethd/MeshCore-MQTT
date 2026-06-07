@@ -13,6 +13,11 @@ SimpleMeshTables tables;
 
 MyMesh the_mesh(board, radio_driver, *new ArduinoMillis(), fast_rng, rtc_clock, tables);
 
+#if defined(ESP32) && defined(WITH_MQTT_REPORTER)
+  #include "MqttReporter.h"
+  MqttReporter mqtt_reporter(the_mesh, rtc_clock);
+#endif
+
 void halt() {
   while (1) ;
 }

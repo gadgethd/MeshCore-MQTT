@@ -1,6 +1,11 @@
 #include "MyMesh.h"
 #include <algorithm>
 
+#if defined(ESP32) && defined(WITH_MQTT_REPORTER)
+  #include "MqttReporter.h"
+  extern MqttReporter mqtt_reporter;
+#endif
+
 /* ------------------------------ Config -------------------------------- */
 
 #ifndef LORA_FREQ
