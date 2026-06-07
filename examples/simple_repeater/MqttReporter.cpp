@@ -9,6 +9,8 @@
 
 extern "C" esp_err_t esp_crt_bundle_attach(void *conf);
 
+MqttReporter *MqttReporter::s_instance = nullptr;
+
 namespace {
 
 constexpr unsigned long MQTT_DEBUG_STATS_INTERVAL_MS = 60000UL;
@@ -57,6 +59,7 @@ String buildPacketsTopicPath(const char *topic_root, const char *iata, const cha
 
 MqttReporter::MqttReporter(MyMesh &mesh, mesh::RTCClock &clock)
     : _mesh(&mesh), _clock(&clock) {
+  s_instance = this;
   _last_wifi_attempt = 0;
   _last_stats_print = 0;
   _last_ntp_attempt = 0;
@@ -69,6 +72,9 @@ MqttReporter::MqttReporter(MyMesh &mesh, mesh::RTCClock &clock)
   _wifi_reconnect_attempts = 0;
   _loop_iterations = 0;
   _min_free_heap = UINT32_MAX;
+  _last_wifi_disconnect_reason = -1;
+  _wifi_got_ip = false;
+  _wifi_last_ip = "";
   _last_cpu_sample_ms = 0;
   _idle_pct_core0 = -1.0f;
   _idle_pct_core1 = -1.0f;
@@ -97,6 +103,9 @@ MqttReporter::MqttReporter(MyMesh &mesh, mesh::RTCClock &clock)
 }
 
 MqttReporter::~MqttReporter() {
+  if (s_instance == this) {
+    s_instance = nullptr;
+  }
   for (int i = 0; i < MQTT_MAX_BROKERS; i++) {
     if (_clients[i].client != nullptr) {
       esp_mqtt_client_stop(_clients[i].client);
@@ -117,6 +126,21 @@ void MqttReporter::begin(FILESYSTEM *fs) {
   WiFi.mode(WIFI_STA);
   WiFi.setAutoReconnect(true);
   WiFi.setSleep(false);
+  WiFi.onEvent([](WiFiEvent_t event, WiFiEventInfo_t info) {
+    MqttReporter *self = s_instance;
+    if (self == nullptr) return;
+    if (event == ARDUINO_EVENT_WIFI_STA_DISCONNECTED) {
+      self->_last_wifi_disconnect_reason = info.wifi_sta_disconnected.reason;
+      self->_wifi_got_ip = false;
+      Serial.printf("MQTT reporter: WiFi disconnected, reason=%d\n",
+                    self->_last_wifi_disconnect_reason);
+    } else if (event == ARDUINO_EVENT_WIFI_STA_GOT_IP) {
+      self->_wifi_got_ip = true;
+      self->_wifi_last_ip = WiFi.localIP().toString();
+      Serial.printf("MQTT reporter: WiFi got IP: %s\n",
+                    self->_wifi_last_ip.c_str());
+    }
+  });
 
   const MqttSharedConfig &shared = _settings.shared();
   Serial.printf("MQTT reporter: WiFi SSID='%s'\n", shared.wifi_ssid);
@@ -306,7 +330,7 @@ bool MqttReporter::connectWiFi() {
   if (shared.wifi_ssid[0] == '\0') return false;
 
   unsigned long now = millis();
-  if (now - _last_wifi_attempt < 5000UL) return false;
+  if (_last_wifi_attempt != 0 && now - _last_wifi_attempt < 5000UL) return false;
   _last_wifi_attempt = now;
   _wifi_reconnect_attempts++;
 
@@ -790,6 +814,12 @@ void MqttReporter::printStats(Print &out, int broker_idx) const {
   snprintf(line, sizeof(line), "  heap.min_seen_since_boot=%u", (unsigned int)_min_free_heap);
   out.println(line);
   snprintf(line, sizeof(line), "  wifi.connected=%s", isWiFiConnected() ? "yes" : "no");
+  out.println(line);
+  snprintf(line, sizeof(line), "  wifi.got_ip=%s", _wifi_got_ip ? "yes" : "no");
+  out.println(line);
+  snprintf(line, sizeof(line), "  wifi.last_disconnect_reason=%d", _last_wifi_disconnect_reason);
+  out.println(line);
+  snprintf(line, sizeof(line), "  wifi.last_ip=%s", _wifi_last_ip.length() ? _wifi_last_ip.c_str() : "");
   out.println(line);
 
   if (broker_idx >= 0 && broker_idx < MQTT_MAX_BROKERS) {
