@@ -562,7 +562,12 @@ void CommonCLI::handleCommand(uint32_t sender_timestamp, const char* command, ch
      */
     } else if (memcmp(command, "get ", 4) == 0) {
       const char* config = &command[4];
-      if (memcmp(config, "af", 2) == 0) {
+      if (memcmp(config, "dutycycle", 9) == 0) {
+        float dc = 100.0f / (_prefs->airtime_factor + 1.0f);
+        int dc_int = (int)dc;
+        int dc_frac = (int)((dc - dc_int) * 10.0f + 0.5f);
+        sprintf(reply, "> %d.%d%%", dc_int, dc_frac);
+      } else if (memcmp(config, "af", 2) == 0) {
         sprintf(reply, "> %s", StrHelper::ftoa(_prefs->airtime_factor));
       } else if (memcmp(config, "int.thresh", 10) == 0) {
         sprintf(reply, "> %d", (uint32_t) _prefs->interference_threshold);
@@ -591,6 +596,10 @@ void CommonCLI::handleCommand(uint32_t sender_timestamp, const char* command, ch
         sprintf(reply, "> %s", StrHelper::ftoa(_prefs->node_lat));
       } else if (memcmp(config, "lon", 3) == 0) {
         sprintf(reply, "> %s", StrHelper::ftoa(_prefs->node_lon));
+#if defined(USE_SX1262) || defined(USE_SX1268) || defined(USE_LR1110)
+      } else if (memcmp(config, "radio.rxgain", 12) == 0) {
+        sprintf(reply, "> %s", _prefs->rx_boosted_gain ? "on" : "off");
+#endif
       } else if (memcmp(config, "radio", 5) == 0) {
         char freq[16], bw[16];
         strcpy(freq, StrHelper::ftoa(_prefs->freq));
@@ -600,15 +609,20 @@ void CommonCLI::handleCommand(uint32_t sender_timestamp, const char* command, ch
         sprintf(reply, "> %s", StrHelper::ftoa(_prefs->rx_delay_base));
       } else if (memcmp(config, "txdelay", 7) == 0) {
         sprintf(reply, "> %s", StrHelper::ftoa(_prefs->tx_delay_factor));
+      } else if (memcmp(config, "flood.max.advert", 16) == 0) {
+        sprintf(reply, "> %d", (uint32_t)_prefs->flood_max_advert);
+      } else if (memcmp(config, "flood.max.unscoped", 18) == 0) {
+        sprintf(reply, "> %d", (uint32_t)_prefs->flood_max_unscoped);
       } else if (memcmp(config, "flood.max", 9) == 0) {
         sprintf(reply, "> %d", (uint32_t)_prefs->flood_max);
       } else if (memcmp(config, "direct.txdelay", 14) == 0) {
         sprintf(reply, "> %s", StrHelper::ftoa(_prefs->direct_tx_delay_factor));
       } else if (memcmp(config, "owner.info", 10) == 0) {
+        auto start = reply;
         *reply++ = '>';
         *reply++ = ' ';
         const char* sp = _prefs->owner_info;
-        while (*sp) {
+        while (*sp && reply - start < 159) {
           *reply++ = (*sp == '\n') ? '|' : *sp;    // translate newline back to orig '|'
           sp++;
         }
@@ -715,7 +729,19 @@ void CommonCLI::handleCommand(uint32_t sender_timestamp, const char* command, ch
      */
     } else if (memcmp(command, "set ", 4) == 0) {
       const char* config = &command[4];
-      if (memcmp(config, "af ", 3) == 0) {
+      if (memcmp(config, "dutycycle ", 10) == 0) {
+        float dc = atof(&config[10]);
+        if (dc < 1 || dc > 100) {
+          strcpy(reply, "ERROR: dutycycle must be 1-100");
+        } else {
+          _prefs->airtime_factor = (100.0f / dc) - 1.0f;
+          savePrefs();
+          float actual = 100.0f / (_prefs->airtime_factor + 1.0f);
+          int a_int = (int)actual;
+          int a_frac = (int)((actual - a_int) * 10.0f + 0.5f);
+          sprintf(reply, "OK - %d.%d%%", a_int, a_frac);
+        }
+      } else if (memcmp(config, "af ", 3) == 0) {
         _prefs->airtime_factor = atof(&config[3]);
         savePrefs();
         strcpy(reply, "OK");
@@ -784,6 +810,13 @@ void CommonCLI::handleCommand(uint32_t sender_timestamp, const char* command, ch
         _prefs->disable_fwd = memcmp(&config[7], "off", 3) == 0;
         savePrefs();
         strcpy(reply, _prefs->disable_fwd ? "OK - repeat is now OFF" : "OK - repeat is now ON");
+#if defined(USE_SX1262) || defined(USE_SX1268) || defined(USE_LR1110)
+      } else if (memcmp(config, "radio.rxgain ", 13) == 0) {
+        _prefs->rx_boosted_gain = memcmp(&config[13], "on", 2) == 0;
+        strcpy(reply, "OK");
+        savePrefs();
+        _callbacks->setRxBoostedGain(_prefs->rx_boosted_gain);
+#endif
       } else if (memcmp(config, "radio ", 6) == 0) {
         strcpy(tmp, &config[6]);
         const char *parts[4];
@@ -812,21 +845,39 @@ void CommonCLI::handleCommand(uint32_t sender_timestamp, const char* command, ch
         strcpy(reply, "OK");
       } else if (memcmp(config, "rxdelay ", 8) == 0) {
         float db = atof(&config[8]);
-        if (db >= 0) {
+        if (db >= 0 && db <= 20.0f) {
           _prefs->rx_delay_base = db;
           savePrefs();
           strcpy(reply, "OK");
         } else {
-          strcpy(reply, "Error, cannot be negative");
+          strcpy(reply, "Error, must be 0-20");
         }
       } else if (memcmp(config, "txdelay ", 8) == 0) {
         float f = atof(&config[8]);
-        if (f >= 0) {
+        if (f >= 0 && f <= 2.0f) {
           _prefs->tx_delay_factor = f;
           savePrefs();
           strcpy(reply, "OK");
         } else {
-          strcpy(reply, "Error, cannot be negative");
+          strcpy(reply, "Error, must be 0-2");
+        }
+      } else if (memcmp(config, "flood.max.unscoped ", 19) == 0) {
+        uint8_t m = atoi(&config[19]);
+        if (m <= 64) {
+          _prefs->flood_max_unscoped = m;
+          savePrefs();
+          strcpy(reply, "OK");
+        } else {
+          strcpy(reply, "Error, max 64");
+        }
+      } else if (memcmp(config, "flood.max.advert ", 17) == 0) {
+        uint8_t m = atoi(&config[17]);
+        if (m <= 64) {
+          _prefs->flood_max_advert = m;
+          savePrefs();
+          strcpy(reply, "OK");
+        } else {
+          strcpy(reply, "Error, max 64");
         }
       } else if (memcmp(config, "flood.max ", 10) == 0) {
         uint8_t m = atoi(&config[10]);
@@ -839,12 +890,12 @@ void CommonCLI::handleCommand(uint32_t sender_timestamp, const char* command, ch
         }
       } else if (memcmp(config, "direct.txdelay ", 15) == 0) {
         float f = atof(&config[15]);
-        if (f >= 0) {
+        if (f >= 0 && f <= 2.0f) {
           _prefs->direct_tx_delay_factor = f;
           savePrefs();
           strcpy(reply, "OK");
         } else {
-          strcpy(reply, "Error, cannot be negative");
+          strcpy(reply, "Error, must be 0-2");
         }
       } else if (memcmp(config, "owner.info ", 11) == 0) {
         config += 11;
