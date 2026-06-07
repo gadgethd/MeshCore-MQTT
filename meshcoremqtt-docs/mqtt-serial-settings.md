@@ -102,6 +102,32 @@ Notes:
 - `show mqtt` masks this field as `******`
 - `get mqtt.1.password` returns the real stored value
 
+### `mqtt.1.auth`
+
+- Purpose: authentication mode for this broker
+- Example: `set mqtt.1.auth device`
+- Stored values:
+  - `password`: use the configured `mqtt.1.username` and `mqtt.1.password`
+  - `device`: use MeshCore device-signing authentication
+- Default: `password`
+
+When `device` is selected, the firmware sends:
+
+- Username: `v1_<UPPERCASE_PUBLIC_KEY>`
+- Password: a MeshCore JWT-style auth token signed by the node's MeshCore private key. The token uses base64url header/payload segments and a hex Ed25519 signature, matching `meshcore-decoder`'s `createAuthToken()`.
+
+This is the mode used by LetsMesh and MeshMapper device-signing brokers.
+
+### `mqtt.1.auth.audience`
+
+- Purpose: JWT `aud` claim for MeshCore device-signing authentication
+- Example: `set mqtt.1.auth.audience mqtt.meshmapper.net`
+- Stored length: up to 63 characters
+- Empty value allowed: yes
+- Default: empty, which means derive the audience from the broker URI host
+
+For example, `wss://mqtt.meshmapper.net:443/` derives `mqtt.meshmapper.net`.
+
 ### `mqtt.1.topic.root`
 
 - Purpose: topic root used to derive status and packet topics

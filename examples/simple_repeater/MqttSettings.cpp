@@ -49,16 +49,24 @@ bool MqttSettingsStore::load() {
     return loadV2((const uint8_t *)&v2, bytes_read);
   }
 
-  if (header.version == CONFIG_VERSION) {
+  if (header.version == 3) {
     PersistedMqttConfigV3 v3;
     size_t bytes_read = file.read((uint8_t *)&v3, sizeof(v3));
     file.close();
     if (bytes_read != sizeof(v3)) return false;
+    return loadV3((const uint8_t *)&v3, bytes_read);
+  }
 
-    _shared = v3.shared;
+  if (header.version == CONFIG_VERSION) {
+    PersistedMqttConfigV4 v4;
+    size_t bytes_read = file.read((uint8_t *)&v4, sizeof(v4));
+    file.close();
+    if (bytes_read != sizeof(v4)) return false;
+
+    _shared = v4.shared;
     sanitizeShared(_shared);
     for (int i = 0; i < MQTT_MAX_BROKERS; i++) {
-      _brokers[i] = v3.brokers[i];
+      _brokers[i] = v4.brokers[i];
       sanitizeBroker(_brokers[i]);
     }
     return true;
@@ -83,15 +91,16 @@ bool MqttSettingsStore::loadV1(const uint8_t *data, size_t len) {
   StrHelper::strncpy(_brokers[0].uri, v1->config.uri, sizeof(_brokers[0].uri));
   StrHelper::strncpy(_brokers[0].username, v1->config.username, sizeof(_brokers[0].username));
   StrHelper::strncpy(_brokers[0].password, v1->config.password, sizeof(_brokers[0].password));
+  StrHelper::strncpy(_brokers[0].auth, "password", sizeof(_brokers[0].auth));
   StrHelper::strncpy(_brokers[0].topic_root, v1->config.topic_root, sizeof(_brokers[0].topic_root));
   StrHelper::strncpy(_brokers[0].iata, v1->config.iata, sizeof(_brokers[0].iata));
   _brokers[0].retain_status = v1->config.retain_status ? 1 : 0;
   _brokers[0].enabled = 1;
   sanitizeBroker(_brokers[0]);
 
-  // Save as v3 format
+  // Save as current compatible format
   save();
-  Serial.println("MQTT settings: migrated v1 -> v3");
+  Serial.println("MQTT settings: migrated v1");
   return true;
 }
 
@@ -108,6 +117,7 @@ bool MqttSettingsStore::loadV2(const uint8_t *data, size_t len) {
     StrHelper::strncpy(dst.uri, src.uri, sizeof(dst.uri));
     StrHelper::strncpy(dst.username, src.username, sizeof(dst.username));
     StrHelper::strncpy(dst.password, src.password, sizeof(dst.password));
+    StrHelper::strncpy(dst.auth, "password", sizeof(dst.auth));
     StrHelper::strncpy(dst.topic_root, src.topic_root, sizeof(dst.topic_root));
     StrHelper::strncpy(dst.iata, src.iata, sizeof(dst.iata));
     dst.retain_status = src.retain_status;
@@ -115,33 +125,94 @@ bool MqttSettingsStore::loadV2(const uint8_t *data, size_t len) {
     sanitizeBroker(dst);
   }
 
-  // Save as v3 format
+  // Save as current compatible format
   save();
-  Serial.println("MQTT settings: migrated v2 -> v3");
+  Serial.println("MQTT settings: migrated v2");
+  return true;
+}
+
+bool MqttSettingsStore::loadV3(const uint8_t *data, size_t len) {
+  if (len < sizeof(PersistedMqttConfigV3)) return false;
+  const PersistedMqttConfigV3 *v3 = (const PersistedMqttConfigV3 *)data;
+
+  _shared = v3->shared;
+  sanitizeShared(_shared);
+
+  for (int i = 0; i < MQTT_MAX_BROKERS; i++) {
+    const MqttBrokerConfigV3 &src = v3->brokers[i];
+    MqttBrokerConfig &dst = _brokers[i];
+    StrHelper::strncpy(dst.uri, src.uri, sizeof(dst.uri));
+    StrHelper::strncpy(dst.username, src.username, sizeof(dst.username));
+    StrHelper::strncpy(dst.password, src.password, sizeof(dst.password));
+    StrHelper::strncpy(dst.auth, "password", sizeof(dst.auth));
+    StrHelper::strncpy(dst.topic_root, src.topic_root, sizeof(dst.topic_root));
+    StrHelper::strncpy(dst.iata, src.iata, sizeof(dst.iata));
+    dst.retain_status = src.retain_status;
+    dst.enabled = src.enabled;
+    sanitizeBroker(dst);
+  }
+
   return true;
 }
 
 bool MqttSettingsStore::save() {
   if (_fs == nullptr) return false;
 
-  PersistedMqttConfigV3 v3 = {};
-  v3.magic = CONFIG_MAGIC;
-  v3.version = CONFIG_VERSION;
-  v3.broker_count = (uint8_t)brokerCount();
-  v3.reserved = 0;
-  v3.shared = _shared;
-  sanitizeShared(v3.shared);
+  if (!hasV4Options()) {
+    PersistedMqttConfigV3 v3 = {};
+    v3.magic = CONFIG_MAGIC;
+    v3.version = 3;
+    v3.broker_count = (uint8_t)brokerCount();
+    v3.reserved = 0;
+    v3.shared = _shared;
+    sanitizeShared(v3.shared);
+    for (int i = 0; i < MQTT_MAX_BROKERS; i++) {
+      const MqttBrokerConfig &src = _brokers[i];
+      MqttBrokerConfigV3 &dst = v3.brokers[i];
+      StrHelper::strncpy(dst.uri, src.uri, sizeof(dst.uri));
+      StrHelper::strncpy(dst.username, src.username, sizeof(dst.username));
+      StrHelper::strncpy(dst.password, src.password, sizeof(dst.password));
+      StrHelper::strncpy(dst.topic_root, src.topic_root, sizeof(dst.topic_root));
+      StrHelper::strncpy(dst.iata, src.iata, sizeof(dst.iata));
+      dst.retain_status = src.retain_status ? 1 : 0;
+      dst.enabled = src.enabled ? 1 : 0;
+    }
+
+    File file = _fs->open(CONFIG_PATH, "w");
+    if (!file) return false;
+
+    size_t bytes_written = file.write((const uint8_t *)&v3, sizeof(v3));
+    file.close();
+    return bytes_written == sizeof(v3);
+  }
+
+  PersistedMqttConfigV4 v4 = {};
+  v4.magic = CONFIG_MAGIC;
+  v4.version = CONFIG_VERSION;
+  v4.broker_count = (uint8_t)brokerCount();
+  v4.reserved = 0;
+  v4.shared = _shared;
+  sanitizeShared(v4.shared);
   for (int i = 0; i < MQTT_MAX_BROKERS; i++) {
-    v3.brokers[i] = _brokers[i];
-    sanitizeBroker(v3.brokers[i]);
+    v4.brokers[i] = _brokers[i];
+    sanitizeBroker(v4.brokers[i]);
   }
 
   File file = _fs->open(CONFIG_PATH, "w");
   if (!file) return false;
 
-  size_t bytes_written = file.write((const uint8_t *)&v3, sizeof(v3));
+  size_t bytes_written = file.write((const uint8_t *)&v4, sizeof(v4));
   file.close();
-  return bytes_written == sizeof(v3);
+  return bytes_written == sizeof(v4);
+}
+
+bool MqttSettingsStore::hasV4Options() const {
+  for (int i = 0; i < MQTT_MAX_BROKERS; i++) {
+    const MqttBrokerConfig &b = _brokers[i];
+    if (strcasecmp(b.auth, "device") == 0) return true;
+    if (b.auth_audience[0] != '\0') return true;
+  }
+  return false;
 }
 
 void MqttSettingsStore::resetToDefaults() {
@@ -156,6 +227,8 @@ void MqttSettingsStore::resetToDefaults() {
   StrHelper::strncpy(_brokers[0].uri, MQTT_BROKER1_URI, sizeof(_brokers[0].uri));
   StrHelper::strncpy(_brokers[0].username, MQTT_BROKER1_USERNAME, sizeof(_brokers[0].username));
   StrHelper::strncpy(_brokers[0].password, MQTT_BROKER1_PASSWORD, sizeof(_brokers[0].password));
+  StrHelper::strncpy(_brokers[0].auth, MQTT_BROKER1_AUTH, sizeof(_brokers[0].auth));
+  StrHelper::strncpy(_brokers[0].auth_audience, MQTT_BROKER1_AUTH_AUDIENCE, sizeof(_brokers[0].auth_audience));
   StrHelper::strncpy(_brokers[0].topic_root, MQTT_BROKER1_TOPIC_ROOT, sizeof(_brokers[0].topic_root));
   StrHelper::strncpy(_brokers[0].iata, MQTT_BROKER1_IATA, sizeof(_brokers[0].iata));
   _brokers[0].retain_status = MQTT_BROKER1_RETAIN_STATUS ? 1 : 0;
@@ -164,6 +237,8 @@ void MqttSettingsStore::resetToDefaults() {
   StrHelper::strncpy(_brokers[1].uri, MQTT_BROKER2_URI, sizeof(_brokers[1].uri));
   StrHelper::strncpy(_brokers[1].username, MQTT_BROKER2_USERNAME, sizeof(_brokers[1].username));
   StrHelper::strncpy(_brokers[1].password, MQTT_BROKER2_PASSWORD, sizeof(_brokers[1].password));
+  StrHelper::strncpy(_brokers[1].auth, MQTT_BROKER2_AUTH, sizeof(_brokers[1].auth));
+  StrHelper::strncpy(_brokers[1].auth_audience, MQTT_BROKER2_AUTH_AUDIENCE, sizeof(_brokers[1].auth_audience));
   StrHelper::strncpy(_brokers[1].topic_root, MQTT_BROKER2_TOPIC_ROOT, sizeof(_brokers[1].topic_root));
   StrHelper::strncpy(_brokers[1].iata, MQTT_BROKER2_IATA, sizeof(_brokers[1].iata));
   _brokers[1].retain_status = MQTT_BROKER2_RETAIN_STATUS ? 1 : 0;
@@ -172,6 +247,8 @@ void MqttSettingsStore::resetToDefaults() {
   StrHelper::strncpy(_brokers[2].uri, MQTT_BROKER3_URI, sizeof(_brokers[2].uri));
   StrHelper::strncpy(_brokers[2].username, MQTT_BROKER3_USERNAME, sizeof(_brokers[2].username));
   StrHelper::strncpy(_brokers[2].password, MQTT_BROKER3_PASSWORD, sizeof(_brokers[2].password));
+  StrHelper::strncpy(_brokers[2].auth, MQTT_BROKER3_AUTH, sizeof(_brokers[2].auth));
+  StrHelper::strncpy(_brokers[2].auth_audience, MQTT_BROKER3_AUTH_AUDIENCE, sizeof(_brokers[2].auth_audience));
   StrHelper::strncpy(_brokers[2].topic_root, MQTT_BROKER3_TOPIC_ROOT, sizeof(_brokers[2].topic_root));
   StrHelper::strncpy(_brokers[2].iata, MQTT_BROKER3_IATA, sizeof(_brokers[2].iata));
   _brokers[2].retain_status = MQTT_BROKER3_RETAIN_STATUS ? 1 : 0;
@@ -180,6 +257,8 @@ void MqttSettingsStore::resetToDefaults() {
   StrHelper::strncpy(_brokers[3].uri, MQTT_BROKER4_URI, sizeof(_brokers[3].uri));
   StrHelper::strncpy(_brokers[3].username, MQTT_BROKER4_USERNAME, sizeof(_brokers[3].username));
   StrHelper::strncpy(_brokers[3].password, MQTT_BROKER4_PASSWORD, sizeof(_brokers[3].password));
+  StrHelper::strncpy(_brokers[3].auth, MQTT_BROKER4_AUTH, sizeof(_brokers[3].auth));
+  StrHelper::strncpy(_brokers[3].auth_audience, MQTT_BROKER4_AUTH_AUDIENCE, sizeof(_brokers[3].auth_audience));
   StrHelper::strncpy(_brokers[3].topic_root, MQTT_BROKER4_TOPIC_ROOT, sizeof(_brokers[3].topic_root));
   StrHelper::strncpy(_brokers[3].iata, MQTT_BROKER4_IATA, sizeof(_brokers[3].iata));
   _brokers[3].retain_status = MQTT_BROKER4_RETAIN_STATUS ? 1 : 0;
@@ -188,6 +267,8 @@ void MqttSettingsStore::resetToDefaults() {
   StrHelper::strncpy(_brokers[4].uri, MQTT_BROKER5_URI, sizeof(_brokers[4].uri));
   StrHelper::strncpy(_brokers[4].username, MQTT_BROKER5_USERNAME, sizeof(_brokers[4].username));
   StrHelper::strncpy(_brokers[4].password, MQTT_BROKER5_PASSWORD, sizeof(_brokers[4].password));
+  StrHelper::strncpy(_brokers[4].auth, MQTT_BROKER5_AUTH, sizeof(_brokers[4].auth));
+  StrHelper::strncpy(_brokers[4].auth_audience, MQTT_BROKER5_AUTH_AUDIENCE, sizeof(_brokers[4].auth_audience));
   StrHelper::strncpy(_brokers[4].topic_root, MQTT_BROKER5_TOPIC_ROOT, sizeof(_brokers[4].topic_root));
   StrHelper::strncpy(_brokers[4].iata, MQTT_BROKER5_IATA, sizeof(_brokers[4].iata));
   _brokers[4].retain_status = MQTT_BROKER5_RETAIN_STATUS ? 1 : 0;
@@ -196,6 +277,8 @@ void MqttSettingsStore::resetToDefaults() {
   StrHelper::strncpy(_brokers[5].uri, MQTT_BROKER6_URI, sizeof(_brokers[5].uri));
   StrHelper::strncpy(_brokers[5].username, MQTT_BROKER6_USERNAME, sizeof(_brokers[5].username));
   StrHelper::strncpy(_brokers[5].password, MQTT_BROKER6_PASSWORD, sizeof(_brokers[5].password));
+  StrHelper::strncpy(_brokers[5].auth, MQTT_BROKER6_AUTH, sizeof(_brokers[5].auth));
+  StrHelper::strncpy(_brokers[5].auth_audience, MQTT_BROKER6_AUTH_AUDIENCE, sizeof(_brokers[5].auth_audience));
   StrHelper::strncpy(_brokers[5].topic_root, MQTT_BROKER6_TOPIC_ROOT, sizeof(_brokers[5].topic_root));
   StrHelper::strncpy(_brokers[5].iata, MQTT_BROKER6_IATA, sizeof(_brokers[5].iata));
   _brokers[5].retain_status = MQTT_BROKER6_RETAIN_STATUS ? 1 : 0;
@@ -275,6 +358,10 @@ bool MqttSettingsStore::getValue(const char *key, char *dest, size_t dest_size, 
     value = b.username;
   } else if (strcmp(field, "password") == 0) {
     value = b.password;
+  } else if (strcmp(field, "auth") == 0) {
+    value = b.auth;
+  } else if (strcmp(field, "auth.audience") == 0 || strcmp(field, "audience") == 0) {
+    value = b.auth_audience;
   } else if (strcmp(field, "topic.root") == 0) {
     value = b.topic_root;
   } else if (strcmp(field, "iata") == 0) {
@@ -330,6 +417,10 @@ bool MqttSettingsStore::setValue(const char *key, const char *value) {
     StrHelper::strncpy(b.username, value, sizeof(b.username));
   } else if (strcmp(field, "password") == 0) {
     StrHelper::strncpy(b.password, value, sizeof(b.password));
+  } else if (strcmp(field, "auth") == 0) {
+    StrHelper::strncpy(b.auth, value, sizeof(b.auth));
+  } else if (strcmp(field, "auth.audience") == 0 || strcmp(field, "audience") == 0) {
+    StrHelper::strncpy(b.auth_audience, value, sizeof(b.auth_audience));
   } else if (strcmp(field, "topic.root") == 0) {
     StrHelper::strncpy(b.topic_root, value, sizeof(b.topic_root));
   } else if (strcmp(field, "iata") == 0) {
@@ -364,9 +455,14 @@ void MqttSettingsStore::sanitizeBroker(MqttBrokerConfig &cfg) {
   cfg.uri[sizeof(cfg.uri) - 1] = '\0';
   cfg.username[sizeof(cfg.username) - 1] = '\0';
   cfg.password[sizeof(cfg.password) - 1] = '\0';
+  cfg.auth[sizeof(cfg.auth) - 1] = '\0';
+  cfg.auth_audience[sizeof(cfg.auth_audience) - 1] = '\0';
   cfg.topic_root[sizeof(cfg.topic_root) - 1] = '\0';
   cfg.iata[sizeof(cfg.iata) - 1] = '\0';
 
+  if (strcasecmp(cfg.auth, "device") != 0) {
+    StrHelper::strncpy(cfg.auth, "password", sizeof(cfg.auth));
+  }
   if (cfg.topic_root[0] == '\0') {
     StrHelper::strncpy(cfg.topic_root, MQTT_TOPIC_ROOT, sizeof(cfg.topic_root));
   }

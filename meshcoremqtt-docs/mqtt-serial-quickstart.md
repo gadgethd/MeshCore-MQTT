@@ -45,6 +45,36 @@ show mqtt.1
 show mqtt stats.1
 ```
 
+## MeshMapper / LetsMesh Device Signing
+
+MeshMapper and LetsMesh use MeshCore device-signing authentication instead of a static MQTT username/password.
+
+MeshMapper example:
+
+```text
+set mqtt.1.uri wss://mqtt.meshmapper.net:443/
+set mqtt.1.auth device
+set mqtt.1.auth.audience mqtt.meshmapper.net
+set mqtt.1.topic.root meshcore/{IATA}/{PUBLIC_KEY}/packets
+set mqtt.1.iata YOUR_IATA
+set mqtt.1.retain.status 1
+set mqtt.1.enabled 1
+mqtt reconnect 1
+```
+
+LetsMesh US example:
+
+```text
+set mqtt.2.uri wss://mqtt-us-v1.letsmesh.net:443/
+set mqtt.2.auth device
+set mqtt.2.auth.audience mqtt-us-v1.letsmesh.net
+set mqtt.2.topic.root meshcore/{IATA}/{PUBLIC_KEY}/packets
+set mqtt.2.iata YOUR_IATA
+set mqtt.2.retain.status 1
+set mqtt.2.enabled 1
+mqtt reconnect 2
+```
+
 ## What To Expect
 
 - Each successful `set mqtt...` command replies with `OK`.

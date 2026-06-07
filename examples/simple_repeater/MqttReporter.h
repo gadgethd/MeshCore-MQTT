@@ -43,6 +43,7 @@ public:
   bool isWiFiConnected() const;
   bool isMqttConnected() const;
   bool isMqttConnected(int broker_idx) const;
+  const char *getLastMqttError(int broker_idx) const;
   bool getConfigValue(const char *key, char *dest, size_t dest_size, bool mask_secret = false) const;
   bool setConfigValue(const char *key, const char *value);
   bool resetConfig();
@@ -55,6 +56,9 @@ private:
     esp_mqtt_client_handle_t client;
     bool started;
     bool connected;
+    char auth_username[80];
+    char auth_password[512];
+    char last_error[96];
     char status_topic[384];
     char packets_topic[384];
     String offline_payload;
@@ -109,7 +113,9 @@ private:
   void syncTimeFromNtp();
   void publishStatus(int idx, const char *status);
   void handleMqttEvent(int broker_idx, esp_mqtt_event_handle_t event);
+  void setLastMqttError(int broker_idx, const char *fmt, ...);
   bool brokerNeedsTimeSync(int idx) const;
+  bool buildDeviceAuthCredentials(int idx, const char *client_id, char *username, size_t username_len, char *password, size_t password_len) const;
 
   String buildIsoTimestamp() const;
   String buildTimeField() const;

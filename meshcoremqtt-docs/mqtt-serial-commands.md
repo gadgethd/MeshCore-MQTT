@@ -64,6 +64,24 @@ show mqtt stats.1
 show mqtt stats.2
 ```
 
+### `mqtt ok 1`
+
+Return a tiny per-broker health response: `> 1` when the broker is currently connected, otherwise `> 0`.
+
+If the broker is disconnected and the firmware has a recorded connection failure, the response appends the last error:
+
+```text
+> 0 conn refused not_authorized(5)
+> 0 tcp err=0x801a tls=0x0 cert=0x0 sock=0
+```
+
+Examples:
+
+```text
+mqtt ok 1
+mqtt ok 2
+```
+
 ## Get Commands
 
 ### `get mqtt.<key>`

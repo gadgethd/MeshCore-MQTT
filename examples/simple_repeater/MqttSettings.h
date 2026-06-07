@@ -43,6 +43,12 @@
 #ifndef MQTT_BROKER1_PASSWORD
   #define MQTT_BROKER1_PASSWORD MQTT_PASSWORD
 #endif
+#ifndef MQTT_BROKER1_AUTH
+  #define MQTT_BROKER1_AUTH "password"
+#endif
+#ifndef MQTT_BROKER1_AUTH_AUDIENCE
+  #define MQTT_BROKER1_AUTH_AUDIENCE ""
+#endif
 #ifndef MQTT_BROKER1_TOPIC_ROOT
   #define MQTT_BROKER1_TOPIC_ROOT MQTT_TOPIC_ROOT
 #endif
@@ -64,6 +70,12 @@
 #endif
 #ifndef MQTT_BROKER2_PASSWORD
   #define MQTT_BROKER2_PASSWORD ""
+#endif
+#ifndef MQTT_BROKER2_AUTH
+  #define MQTT_BROKER2_AUTH "password"
+#endif
+#ifndef MQTT_BROKER2_AUTH_AUDIENCE
+  #define MQTT_BROKER2_AUTH_AUDIENCE ""
 #endif
 #ifndef MQTT_BROKER2_TOPIC_ROOT
   #define MQTT_BROKER2_TOPIC_ROOT ""
@@ -87,6 +99,12 @@
 #ifndef MQTT_BROKER3_PASSWORD
   #define MQTT_BROKER3_PASSWORD ""
 #endif
+#ifndef MQTT_BROKER3_AUTH
+  #define MQTT_BROKER3_AUTH "password"
+#endif
+#ifndef MQTT_BROKER3_AUTH_AUDIENCE
+  #define MQTT_BROKER3_AUTH_AUDIENCE ""
+#endif
 #ifndef MQTT_BROKER3_TOPIC_ROOT
   #define MQTT_BROKER3_TOPIC_ROOT ""
 #endif
@@ -108,6 +126,12 @@
 #endif
 #ifndef MQTT_BROKER4_PASSWORD
   #define MQTT_BROKER4_PASSWORD ""
+#endif
+#ifndef MQTT_BROKER4_AUTH
+  #define MQTT_BROKER4_AUTH "password"
+#endif
+#ifndef MQTT_BROKER4_AUTH_AUDIENCE
+  #define MQTT_BROKER4_AUTH_AUDIENCE ""
 #endif
 #ifndef MQTT_BROKER4_TOPIC_ROOT
   #define MQTT_BROKER4_TOPIC_ROOT ""
@@ -131,6 +155,12 @@
 #ifndef MQTT_BROKER5_PASSWORD
   #define MQTT_BROKER5_PASSWORD ""
 #endif
+#ifndef MQTT_BROKER5_AUTH
+  #define MQTT_BROKER5_AUTH "password"
+#endif
+#ifndef MQTT_BROKER5_AUTH_AUDIENCE
+  #define MQTT_BROKER5_AUTH_AUDIENCE ""
+#endif
 #ifndef MQTT_BROKER5_TOPIC_ROOT
   #define MQTT_BROKER5_TOPIC_ROOT ""
 #endif
@@ -152,6 +182,12 @@
 #endif
 #ifndef MQTT_BROKER6_PASSWORD
   #define MQTT_BROKER6_PASSWORD ""
+#endif
+#ifndef MQTT_BROKER6_AUTH
+  #define MQTT_BROKER6_AUTH "password"
+#endif
+#ifndef MQTT_BROKER6_AUTH_AUDIENCE
+  #define MQTT_BROKER6_AUTH_AUDIENCE ""
 #endif
 #ifndef MQTT_BROKER6_TOPIC_ROOT
   #define MQTT_BROKER6_TOPIC_ROOT ""
@@ -199,6 +235,8 @@ struct MqttBrokerConfig {
   char uri[128];
   char username[64];
   char password[64];
+  char auth[16];
+  char auth_audience[64];
   char topic_root[256];
   char iata[16];
   uint8_t retain_status;
@@ -253,6 +291,17 @@ private:
     uint8_t enabled;
     uint8_t reserved[2];
   };
+
+  struct MqttBrokerConfigV3 {
+    char uri[128];
+    char username[64];
+    char password[64];
+    char topic_root[256];
+    char iata[16];
+    uint8_t retain_status;
+    uint8_t enabled;
+    uint8_t reserved[2];
+  };
   struct PersistedMqttConfigV2 {
     uint32_t magic;
     uint16_t version;
@@ -262,8 +311,18 @@ private:
     MqttBrokerConfigV2 brokers[MQTT_MAX_BROKERS];
   };
 
-  // v3 persisted format (current — topic_root is 256 bytes)
+  // v3 persisted format (topic_root is 256 bytes, no auth mode)
   struct PersistedMqttConfigV3 {
+    uint32_t magic;
+    uint16_t version;
+    uint8_t broker_count;
+    uint8_t reserved;
+    MqttSharedConfig shared;
+    MqttBrokerConfigV3 brokers[MQTT_MAX_BROKERS];
+  };
+
+  // v4 persisted format (current — adds auth mode)
+  struct PersistedMqttConfigV4 {
     uint32_t magic;
     uint16_t version;
     uint8_t broker_count;
@@ -277,14 +336,16 @@ private:
   MqttBrokerConfig _brokers[MQTT_MAX_BROKERS];
 
   static constexpr uint32_t CONFIG_MAGIC = 0x4D515454; // MQTT
-  static constexpr uint16_t CONFIG_VERSION = 3;
+  static constexpr uint16_t CONFIG_VERSION = 4;
   static constexpr const char *CONFIG_PATH = "/mqtt.cfg";
 
   bool loadV1(const uint8_t *data, size_t len);
   bool loadV2(const uint8_t *data, size_t len);
+  bool loadV3(const uint8_t *data, size_t len);
 
   static void sanitizeShared(MqttSharedConfig &cfg);
   static void sanitizeBroker(MqttBrokerConfig &cfg);
+  bool hasV4Options() const;
 
   // Key parsing: returns broker index (0-based) and sets key_out to the
   // remaining key after stripping any "N." prefix. Returns -1 for shared keys.

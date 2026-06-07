@@ -1234,6 +1234,25 @@ bool MyMesh::handleMqttCommand(uint32_t sender_timestamp, char *command, char *r
     return true;
   }
 
+  if (memcmp(command, "mqtt ok ", 8) == 0) {
+    int idx = atoi(command + 8) - 1;
+    if (idx >= 0 && idx < MQTT_MAX_BROKERS) {
+      if (mqtt_reporter.isMqttConnected(idx)) {
+        strcpy(reply, "> 1");
+      } else {
+        const char *last_error = mqtt_reporter.getLastMqttError(idx);
+        if (last_error != nullptr && last_error[0] != '\0') {
+          snprintf(reply, 128, "> 0 %s", last_error);
+        } else {
+          strcpy(reply, "> 0");
+        }
+      }
+    } else {
+      strcpy(reply, "Err - broker 1-6");
+    }
+    return true;
+  }
+
   // "show mqtt.N" — show a single broker
   if (memcmp(command, "show mqtt.", 10) == 0) {
     int idx = atoi(command + 10) - 1;
