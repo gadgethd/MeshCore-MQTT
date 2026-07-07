@@ -1,6 +1,11 @@
 #include "UITask.h"
 #include <Arduino.h>
 #include <helpers/CommonCLI.h>
+#if defined(ESP32) && defined(WITH_MQTT_REPORTER)
+  #include "MqttReporter.h"
+  #include <WiFi.h>
+  extern MqttReporter mqtt_reporter;
+#endif
 
 #ifndef USER_BTN_PRESSED
 #define USER_BTN_PRESSED LOW
@@ -90,6 +95,18 @@ void UITask::renderCurrScreen() {
     _display->setCursor(0, 30);
     sprintf(tmp, "BW: %03.2f CR: %d", _node_prefs->bw, _node_prefs->cr);
     _display->print(tmp);
+
+#if defined(ESP32) && defined(WITH_MQTT_REPORTER)
+    // configured WiFi SSID
+    _display->setColor(DisplayDriver::LIGHT);
+    _display->drawTextEllipsized(0, 44, _display->width(), mqtt_reporter.getWiFiSsid());
+
+    // live WiFi connection state
+    _display->setCursor(0, 54);
+    _display->setColor(mqtt_reporter.isWiFiConnected() ? DisplayDriver::GREEN : DisplayDriver::RED);
+    sprintf(tmp, "WiFi: %s", mqtt_reporter.isWiFiConnected() ? "Connected" : "Disconnected");
+    _display->print(tmp);
+#endif
   }
 }
 

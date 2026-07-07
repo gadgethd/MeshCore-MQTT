@@ -13,9 +13,17 @@
 
 bool ESP32Board::startOTAUpdate(const char* id, char reply[]) {
   inhibit_sleep = true;   // prevent sleep during OTA
-  WiFi.softAP("MeshCore-OTA", NULL);
 
+#if defined(WITH_MQTT_REPORTER)
+  if (WiFi.status() != WL_CONNECTED) {
+    snprintf(reply, 160, "Error: WiFi not connected");
+    return false;
+  }
+  sprintf(reply, "Started: http://%s/update", WiFi.localIP().toString().c_str());
+#else
+  WiFi.softAP("MeshCore-OTA", NULL);
   sprintf(reply, "Started: http://%s/update", WiFi.softAPIP().toString().c_str());
+#endif
   MESH_DEBUG_PRINTLN("startOTAUpdate: %s", reply);
 
   static char id_buf[60];

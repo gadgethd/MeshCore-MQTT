@@ -112,6 +112,8 @@ class MyMesh : public mesh::Mesh, public CommonCLICallbacks {
   float pending_bw;
   uint8_t pending_sf;
   uint8_t pending_cr;
+  uint32_t tx_fail_count;
+  uint32_t tx_queue_peak_len;
   int  matching_peer_indexes[MAX_CLIENTS];
 #if defined(WITH_RS232_BRIDGE)
   RS232Bridge bridge;
@@ -126,6 +128,7 @@ class MyMesh : public mesh::Mesh, public CommonCLICallbacks {
   uint8_t handleAnonClockReq(const mesh::Identity& sender, uint32_t sender_timestamp, const uint8_t* data);
   int handleRequest(ClientInfo* sender, uint32_t sender_timestamp, uint8_t* payload, size_t payload_len);
   mesh::Packet* createSelfAdvert();
+  bool handleMqttCommand(uint32_t sender_timestamp, char *command, char *reply);
 
   File openAppend(const char* fname);
   bool isLooped(const mesh::Packet* packet, const uint8_t max_counters[]);
@@ -183,17 +186,23 @@ public:
 
   void begin(FILESYSTEM* fs);
   void sendNodeDiscoverReq();
+  void seedIdentityDisplayName(const char* display_name);
   const char* getFirmwareVer() override { return FIRMWARE_VERSION; }
   const char* getBuildDate() override { return FIRMWARE_BUILD_DATE; }
   const char* getRole() override { return FIRMWARE_ROLE; }
   const char* getNodeName() { return _prefs.node_name; }
+  String buildMqttStatusStatsJson() const;
+  uint32_t getForwardSuccessCount() const { return getNumSentFlood() + getNumSentDirect(); }
+  uint32_t getForwardFloodSuccessCount() const { return getNumSentFlood(); }
+  uint32_t getForwardDirectSuccessCount() const { return getNumSentDirect(); }
+  uint32_t getForwardFailureCount() const { return tx_fail_count; }
+  uint32_t getTxQueueDepth() const { return _mgr->getOutboundCount(0xFFFFFFFF); }
+  uint32_t getTxQueuePeakDepth() const { return tx_queue_peak_len; }
   NodePrefs* getNodePrefs() {
     return &_prefs;
   }
 
-  void savePrefs() override {
-    _cli.savePrefs(_fs);
-  }
+  void savePrefs() override;
 
   void sendFloodScoped(const TransportKey& scope, mesh::Packet* pkt, uint32_t delay_millis, uint8_t path_hash_size);
 

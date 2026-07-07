@@ -1,3 +1,79 @@
+## MQTT Observer Build In This Fork
+
+This fork adds an outbound-only MQTT observer firmware for ESP-based MeshCore repeater targets. It keeps normal MeshCore packet handling, then publishes MeshCore-compatible MQTT messages over WiFi using secure WebSockets.
+
+What was added in this fork:
+
+* Direct MQTT observer support for ESP repeater builds
+* Secure WebSocket MQTT publishing from the device itself
+* MeshCore-compatible `status` and `packets` topics
+* A generic interactive build script for supported ESP repeater targets
+* A build sweep script for checking which ESP repeater targets compile
+
+How to build a firmware:
+
+```bash
+cd /path/to/MeshCore
+./bin/build-meshcore-mqtt-observer.sh
+```
+
+That script will prompt for:
+
+* Base repeater env / board
+* Observer name
+* Admin password
+* WiFi SSID and password
+* MQTT topic root
+* MQTT WebSocket URI
+* MQTT username and password
+* Observer IATA code
+* Model label
+* Client version
+
+Firmware output:
+
+* `firmware-update.bin` for app/update flashing at `0x10000`
+* `firmware-full.bin` for full-device flashing at `0x00000`
+
+The build output is written under `.pio/build/<selected_env>_mqtt_dynamic/`
+
+How to run the compile sweep:
+
+```bash
+cd /path/to/MeshCore
+./bin/build-test.sh
+```
+
+That script builds all discovered ESP repeater targets, prints which ones passed or failed, and keeps logs under `.build-test/`. By default it cleans up the per-target firmware artifacts after each result. To keep those artifacts, run:
+
+```bash
+BUILD_TEST_KEEP_ARTIFACTS=1 ./bin/build-test.sh
+```
+Currently validated MQTT observer targets:
+
+* `Heltec_E213_repeater_`
+* `Heltec_E290_repeater_`
+* `Heltec_T190_repeater_`
+* `Heltec_Wireless_Tracker_repeater`
+* `heltec_tracker_v2_repeater`
+* `Heltec_v2_repeater`
+* `Heltec_v3_repeater` - verified working on hardware
+* `Heltec_WSL3_repeater`
+* `heltec_v4_repeater`
+* `heltec_v4_tft_repeater`
+* `Heltec_Wireless_Paper_repeater`
+* `LilyGo_T3S3_sx1262_repeater`
+* `LilyGo_T3S3_sx1276_repeater`
+* `Tbeam_SX1262_repeater`
+* `Tbeam_SX1276_repeater`
+* `T_Beam_S3_Supreme_SX1262_repeater`
+* `LilyGo_TDeck_repeater`
+* `LilyGo_TLora_V2_1_1_6_repeater`
+* `Meshadventurer_sx1262_repeater`
+* `Meshadventurer_sx1268_repeater`
+* `RAK_3112_repeater`
+* `Xiao_S3_WIO_repeater`
+
 ## About MeshCore
 
 MeshCore is a lightweight, portable C++ library that enables multi-hop packet routing for embedded projects using LoRa and other packet radios. It is designed for developers who want to create resilient, decentralized communication networks that work without the internet.

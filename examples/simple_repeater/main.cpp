@@ -13,6 +13,11 @@ SimpleMeshTables tables;
 
 MyMesh the_mesh(board, radio_driver, *new ArduinoMillis(), fast_rng, rtc_clock, tables);
 
+#if defined(ESP32) && defined(WITH_MQTT_REPORTER)
+  #include "MqttReporter.h"
+  MqttReporter mqtt_reporter(the_mesh, rtc_clock);
+#endif
+
 void halt() {
   while (1) ;
 }
@@ -56,12 +61,19 @@ void setup() {
   fast_rng.begin(radio_driver.getRngSeed());
 
   FILESYSTEM* fs;
+  char identity_display_name[32] = {0};
 #if defined(NRF52_PLATFORM) || defined(STM32_PLATFORM)
   InternalFS.begin();
   fs = &InternalFS;
   IdentityStore store(InternalFS, "");
 #elif defined(ESP32)
-  SPIFFS.begin(true);
+  if (!SPIFFS.begin(true)) {
+    Serial.println("SPIFFS mount failed, formatting and retrying...");
+    if (!SPIFFS.format() || !SPIFFS.begin(false)) {
+      Serial.println("SPIFFS init failed after format");
+      halt();
+    }
+  }
   fs = &SPIFFS;
   IdentityStore store(SPIFFS, "/identity");
 #elif defined(RP2040_PLATFORM)
@@ -72,14 +84,20 @@ void setup() {
 #else
   #error "need to define filesystem"
 #endif
-  if (!store.load("_main", the_mesh.self_id)) {
+  Serial.printf("[boot] pre-identity name='%s'\n", the_mesh.getNodeName());
+  if (!store.load("_main", the_mesh.self_id, identity_display_name, sizeof(identity_display_name))) {
     MESH_DEBUG_PRINTLN("Generating new keypair");
     the_mesh.self_id = radio_new_identity();   // create new random identity
     int count = 0;
     while (count < 10 && (the_mesh.self_id.pub_key[0] == 0x00 || the_mesh.self_id.pub_key[0] == 0xFF)) {  // reserved id hashes
       the_mesh.self_id = radio_new_identity(); count++;
     }
-    store.save("_main", the_mesh.self_id);
+    store.save("_main", the_mesh.self_id, the_mesh.getNodeName());
+    Serial.printf("[boot] new identity, saved name='%s'\n", the_mesh.getNodeName());
+  } else {
+    Serial.printf("[boot] identity loaded, display_name='%s'\n", identity_display_name);
+    the_mesh.seedIdentityDisplayName(identity_display_name);
+    Serial.printf("[boot] after seedIdentityDisplayName name='%s'\n", the_mesh.getNodeName());
   }
 
   Serial.print("Repeater ID: ");
@@ -90,7 +108,12 @@ void setup() {
   sensors.begin();
 
   the_mesh.begin(fs);
-
+  Serial.printf("[boot] after begin() name='%s' lat=%f lon=%f\n",
+                the_mesh.getNodeName(), the_mesh.getNodePrefs()->node_lat, the_mesh.getNodePrefs()->node_lon);
+#if defined(ESP32) && defined(WITH_MQTT_REPORTER)
+  board.setInhibitSleep(true);   // keep STA Wi-Fi awake for MQTT + OTA
+  mqtt_reporter.begin(fs);
+#endif
 #ifdef DISPLAY_CLASS
   ui_task.begin(the_mesh.getNodePrefs(), FIRMWARE_BUILD_DATE, FIRMWARE_VERSION);
 #endif
@@ -147,6 +170,9 @@ void loop() {
 
   the_mesh.loop();
   sensors.loop();
+#if defined(ESP32) && defined(WITH_MQTT_REPORTER)
+  mqtt_reporter.loop();
+#endif
 #ifdef DISPLAY_CLASS
   ui_task.loop();
 #endif

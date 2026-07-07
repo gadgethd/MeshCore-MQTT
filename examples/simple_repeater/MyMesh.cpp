@@ -1,6 +1,11 @@
 #include "MyMesh.h"
 #include <algorithm>
 
+#if defined(ESP32) && defined(WITH_MQTT_REPORTER)
+  #include "MqttReporter.h"
+  extern MqttReporter mqtt_reporter;
+#endif
+
 /* ------------------------------ Config -------------------------------- */
 
 #ifndef LORA_FREQ
@@ -464,6 +469,10 @@ const char *MyMesh::getLogDateTime() {
 }
 
 void MyMesh::logRxRaw(float snr, float rssi, const uint8_t raw[], int len) {
+#if defined(ESP32) && defined(WITH_MQTT_REPORTER)
+  mqtt_reporter.publishRxRaw(raw, len);
+#endif
+
 #if MESH_PACKET_LOGGING
   Serial.print(getLogDateTime());
   Serial.print(" RAW: ");
@@ -473,6 +482,10 @@ void MyMesh::logRxRaw(float snr, float rssi, const uint8_t raw[], int len) {
 }
 
 void MyMesh::logRx(mesh::Packet *pkt, int len, float score) {
+#if defined(ESP32) && defined(WITH_MQTT_REPORTER)
+  mqtt_reporter.publishRxPacket(pkt, len, score, _radio->getLastRSSI(), _radio->getLastSNR(), _radio->getEstAirtimeFor(len));
+#endif
+
 #ifdef WITH_BRIDGE
   if (_prefs.bridge_pkt_src == 1) {
     bridge.sendPacket(pkt);
@@ -499,6 +512,10 @@ void MyMesh::logRx(mesh::Packet *pkt, int len, float score) {
 }
 
 void MyMesh::logTx(mesh::Packet *pkt, int len) {
+#if defined(ESP32) && defined(WITH_MQTT_REPORTER)
+  mqtt_reporter.publishTxPacket(pkt, len);
+#endif
+
 #ifdef WITH_BRIDGE
   if (_prefs.bridge_pkt_src == 0) {
     bridge.sendPacket(pkt);
@@ -524,6 +541,7 @@ void MyMesh::logTx(mesh::Packet *pkt, int len) {
 }
 
 void MyMesh::logTxFail(mesh::Packet *pkt, int len) {
+  tx_fail_count++;
   if (_logging) {
     File f = openAppend(PACKET_LOG_FILE);
     if (f) {
@@ -989,6 +1007,23 @@ void MyMesh::sendFloodScoped(const TransportKey& scope, mesh::Packet* pkt, uint3
   }
 }
 
+void MyMesh::seedIdentityDisplayName(const char *display_name) {
+  if (display_name == nullptr || display_name[0] == '\0') return;
+  StrHelper::strncpy(_prefs.node_name, display_name, sizeof(_prefs.node_name));
+}
+
+void MyMesh::savePrefs() {
+  _cli.savePrefs(_fs);
+#if defined(NRF52_PLATFORM) || defined(STM32_PLATFORM)
+  IdentityStore store(*_fs, "");
+#elif defined(ESP32) || defined(RP2040_PLATFORM)
+  IdentityStore store(*_fs, "/identity");
+#else
+#error "need to define savePrefs()"
+#endif
+  store.save("_main", self_id, _prefs.node_name);
+}
+
 void MyMesh::applyTempRadioParams(float freq, float bw, uint8_t sf, uint8_t cr, int timeout_mins) {
   set_radio_at = futureMillis(2000); // give CLI reply some time to be sent back, before applying temp radio params
   pending_freq = freq;
@@ -1153,6 +1188,7 @@ void MyMesh::formatPacketStatsReply(char *reply) {
 }
 
 void MyMesh::saveIdentity(const mesh::LocalIdentity &new_id) {
+  self_id = new_id;
 #if defined(NRF52_PLATFORM) || defined(STM32_PLATFORM)
   IdentityStore store(*_fs, "");
 #elif defined(ESP32)
@@ -1162,13 +1198,102 @@ void MyMesh::saveIdentity(const mesh::LocalIdentity &new_id) {
 #else
 #error "need to define saveIdentity()"
 #endif
-  store.save("_main", new_id);
+  store.save("_main", new_id, _prefs.node_name);
 }
 
 void MyMesh::clearStats() {
   radio_driver.resetStats();
   resetStats();
   ((SimpleMeshTables *)getTables())->resetStats();
+  tx_fail_count = 0;
+  tx_queue_peak_len = 0;
+}
+
+bool MyMesh::handleMqttCommand(uint32_t sender_timestamp, char *command, char *reply) {
+#if defined(ESP32) && defined(WITH_MQTT_REPORTER)
+  if (strcmp(command, "show mqtt") == 0 || strcmp(command, "get mqtt") == 0) {
+    mqtt_reporter.printConfig(Serial);
+    reply[0] = 0;
+    return true;
+  }
+
+  if (strcmp(command, "show mqtt stats") == 0) {
+    mqtt_reporter.printStats(Serial);
+    reply[0] = 0;
+    return true;
+  }
+
+  if (memcmp(command, "show mqtt stats.", 16) == 0) {
+    int idx = atoi(command + 16) - 1;
+    if (idx >= 0 && idx < MQTT_MAX_BROKERS) {
+      mqtt_reporter.printStats(Serial, idx);
+      reply[0] = 0;
+    } else {
+      strcpy(reply, "Err - broker 1-6");
+    }
+    return true;
+  }
+
+  // "show mqtt.N" — show a single broker
+  if (memcmp(command, "show mqtt.", 10) == 0) {
+    int idx = atoi(command + 10) - 1;
+    if (idx >= 0 && idx < MQTT_MAX_BROKERS) {
+      mqtt_reporter.printConfig(Serial, idx);
+      reply[0] = 0;
+    } else {
+      strcpy(reply, "Err - broker 1-6");
+    }
+    return true;
+  }
+
+  if (memcmp(command, "mqtt reconnect", 14) == 0) {
+    int idx = -1;
+    if (command[14] == ' ') idx = atoi(command + 15) - 1;
+    mqtt_reporter.reconnect(idx);
+    strcpy(reply, "OK");
+    return true;
+  }
+
+  if (strcmp(command, "mqtt reset") == 0) {
+    if (mqtt_reporter.resetConfig()) {
+      strcpy(reply, "OK");
+    } else {
+      strcpy(reply, "Err - save failed");
+    }
+    return true;
+  }
+
+  if (memcmp(command, "get mqtt.", 9) == 0) {
+    char value[160];
+    if (mqtt_reporter.getConfigValue(command + 9, value, sizeof(value))) {
+      snprintf(reply, 160, "> %s", value);
+    } else {
+      strcpy(reply, "Err - unknown mqtt key");
+    }
+    return true;
+  }
+
+  if (memcmp(command, "set mqtt.", 9) == 0) {
+    char *key = command + 9;
+    char *value = strchr(key, ' ');
+    if (value == NULL) {
+      strcpy(reply, "Err - bad params");
+      return true;
+    }
+
+    *value++ = 0;
+    while (*value == ' ') value++;
+
+    if (mqtt_reporter.setConfigValue(key, value)) {
+      strcpy(reply, "OK");
+    } else {
+      strcpy(reply, "Err - save failed");
+    }
+    return true;
+  }
+#endif
+
+  return false;
 }
 
 void MyMesh::handleCommand(uint32_t sender_timestamp, char *command, char *reply) {
@@ -1257,6 +1382,8 @@ void MyMesh::handleCommand(uint32_t sender_timestamp, char *command, char *reply
       sendNodeDiscoverReq();
       strcpy(reply, "OK - Discover sent");
     }
+  } else if (handleMqttCommand(sender_timestamp, command, reply)) {
+    // already handled
   } else{
     _cli.handleCommand(sender_timestamp, command, reply);  // common CLI commands
   }
@@ -1305,6 +1432,11 @@ void MyMesh::loop() {
   uint32_t now = millis();
   uptime_millis += now - last_millis;
   last_millis = now;
+
+  const uint32_t tx_queue_len = _mgr->getOutboundCount(0xFFFFFFFF);
+  if (tx_queue_len > tx_queue_peak_len) {
+    tx_queue_peak_len = tx_queue_len;
+  }
 }
 
 // To check if there is pending work
@@ -1313,4 +1445,28 @@ bool MyMesh::hasPendingWork() const {
   if (bridge.isRunning()) return true;  // bridge needs WiFi radio, can't sleep
 #endif
   return _mgr->getOutboundTotal() > 0;
+}
+
+String MyMesh::buildMqttStatusStatsJson() const {
+  const uint32_t battery_mv = board.getBattMilliVolts();
+  const uint32_t uptime_secs = (uint32_t)(uptime_millis / 1000ULL);
+  const uint32_t tx_air_secs = getTotalAirTime() / 1000UL;
+  const uint32_t rx_air_secs = getReceiveAirTime() / 1000UL;
+
+  float channel_utilization = 0.0f;
+  float air_util_tx = 0.0f;
+  if (uptime_secs > 0) {
+    channel_utilization = (100.0f * (float)(tx_air_secs + rx_air_secs)) / (float)uptime_secs;
+    air_util_tx = (100.0f * (float)tx_air_secs) / (float)uptime_secs;
+  }
+
+  String stats = "{";
+  stats += "\"battery_mv\":" + String(battery_mv);
+  stats += ",\"uptime_secs\":" + String(uptime_secs);
+  stats += ",\"tx_air_secs\":" + String(tx_air_secs);
+  stats += ",\"rx_air_secs\":" + String(rx_air_secs);
+  stats += ",\"channel_utilization\":" + String(channel_utilization, 1);
+  stats += ",\"air_util_tx\":" + String(air_util_tx, 1);
+  stats += "}";
+  return stats;
 }

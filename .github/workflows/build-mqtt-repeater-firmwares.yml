@@ -1,0 +1,60 @@
+name: Build MQTT Repeater Firmwares
+
+permissions:
+  contents: write
+
+"on":
+  workflow_dispatch:
+  push:
+    tags:
+      - 'mqtt-repeater-*'
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+
+      - name: Clone Repo
+        uses: actions/checkout@v4
+
+      - name: Setup Build Environment
+        uses: ./.github/actions/setup-build-environment
+
+      - name: Build MQTT Firmwares
+        env:
+          FIRMWARE_VERSION: ${{ env.GIT_TAG_VERSION }}
+        run: /usr/bin/env bash bin/ci-build-mqtt-repeater.sh
+
+      - name: Upload Workflow Artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: mqtt-repeater-firmwares
+          path: out
+
+      - name: Create Release
+        uses: softprops/action-gh-release@v2
+        if: startsWith(github.ref, 'refs/tags/')
+        with:
+          name: MQTT Repeater Firmware ${{ env.GIT_TAG_VERSION }}
+          body: |
+            MQTT-enabled repeater firmware built from upstream MeshCore ${{ env.GIT_TAG_VERSION }}.
+
+            Each board folder contains:
+            - `*-update.bin` — flash at 0x10000 (OTA / app update)
+            - `*-full.bin` — flash at 0x00000 (full device flash)
+            - `*-bootloader.bin`, `*-partitions.bin` — ESP32 boot components
+
+            Configure MQTT at runtime via serial:
+            ```
+            set mqtt.wifi.ssid YOUR_SSID
+            set mqtt.wifi.pass YOUR_PASSWORD
+            set mqtt.1.uri wss://your-broker:443/
+            set mqtt.1.username YOUR_USERNAME
+            set mqtt.1.password YOUR_PASSWORD
+            set mqtt.1.topic.root meshcore/{IATA}/{PUBLIC_KEY}/packets
+            set mqtt.1.iata XXX
+            set mqtt.1.enabled 1
+            mqtt reconnect 1
+            ```
+          draft: true
+          files: out/**/*.bin

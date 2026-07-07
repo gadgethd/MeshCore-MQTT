@@ -1,0 +1,380 @@
+#include "MqttSettings.h"
+
+#if defined(ESP32) && defined(WITH_MQTT_REPORTER)
+
+#include <string.h>
+#include <strings.h>
+
+MqttSettingsStore::MqttSettingsStore() : _fs(nullptr) {
+  resetToDefaults();
+}
+
+void MqttSettingsStore::begin(FILESYSTEM *fs) {
+  _fs = fs;
+  load();
+}
+
+bool MqttSettingsStore::load() {
+  resetToDefaults();
+  if (_fs == nullptr) return false;
+
+  File file = _fs->open(CONFIG_PATH, "r");
+  if (!file) return false;
+
+  // Read header first to determine version
+  struct { uint32_t magic; uint16_t version; } header;
+  size_t hdr_read = file.read((uint8_t *)&header, sizeof(header));
+  file.close();
+
+  if (hdr_read < sizeof(header)) return false;
+  if (header.magic != CONFIG_MAGIC) return false;
+
+  // Re-read full file
+  file = _fs->open(CONFIG_PATH, "r");
+  if (!file) return false;
+
+  if (header.version == 1) {
+    PersistedMqttConfigV1 v1;
+    size_t bytes_read = file.read((uint8_t *)&v1, sizeof(v1));
+    file.close();
+    if (bytes_read != sizeof(v1)) return false;
+    return loadV1((const uint8_t *)&v1, bytes_read);
+  }
+
+  if (header.version == 2) {
+    PersistedMqttConfigV2 v2;
+    size_t bytes_read = file.read((uint8_t *)&v2, sizeof(v2));
+    file.close();
+    if (bytes_read != sizeof(v2)) return false;
+    return loadV2((const uint8_t *)&v2, bytes_read);
+  }
+
+  if (header.version == CONFIG_VERSION) {
+    PersistedMqttConfigV3 v3;
+    size_t bytes_read = file.read((uint8_t *)&v3, sizeof(v3));
+    file.close();
+    if (bytes_read != sizeof(v3)) return false;
+
+    _shared = v3.shared;
+    sanitizeShared(_shared);
+    for (int i = 0; i < MQTT_MAX_BROKERS; i++) {
+      _brokers[i] = v3.brokers[i];
+      sanitizeBroker(_brokers[i]);
+    }
+    return true;
+  }
+
+  file.close();
+  return false;
+}
+
+bool MqttSettingsStore::loadV1(const uint8_t *data, size_t len) {
+  if (len < sizeof(PersistedMqttConfigV1)) return false;
+  const PersistedMqttConfigV1 *v1 = (const PersistedMqttConfigV1 *)data;
+
+  // Migrate shared fields
+  StrHelper::strncpy(_shared.wifi_ssid, v1->config.wifi_ssid, sizeof(_shared.wifi_ssid));
+  StrHelper::strncpy(_shared.wifi_pwd, v1->config.wifi_pwd, sizeof(_shared.wifi_pwd));
+  StrHelper::strncpy(_shared.model, v1->config.model, sizeof(_shared.model));
+  StrHelper::strncpy(_shared.client_version, v1->config.client_version, sizeof(_shared.client_version));
+  sanitizeShared(_shared);
+
+  // Migrate broker 0 fields
+  StrHelper::strncpy(_brokers[0].uri, v1->config.uri, sizeof(_brokers[0].uri));
+  StrHelper::strncpy(_brokers[0].username, v1->config.username, sizeof(_brokers[0].username));
+  StrHelper::strncpy(_brokers[0].password, v1->config.password, sizeof(_brokers[0].password));
+  StrHelper::strncpy(_brokers[0].topic_root, v1->config.topic_root, sizeof(_brokers[0].topic_root));
+  StrHelper::strncpy(_brokers[0].iata, v1->config.iata, sizeof(_brokers[0].iata));
+  _brokers[0].retain_status = v1->config.retain_status ? 1 : 0;
+  _brokers[0].enabled = 1;
+  sanitizeBroker(_brokers[0]);
+
+  // Save as v3 format
+  save();
+  Serial.println("MQTT settings: migrated v1 -> v3");
+  return true;
+}
+
+bool MqttSettingsStore::loadV2(const uint8_t *data, size_t len) {
+  if (len < sizeof(PersistedMqttConfigV2)) return false;
+  const PersistedMqttConfigV2 *v2 = (const PersistedMqttConfigV2 *)data;
+
+  _shared = v2->shared;
+  sanitizeShared(_shared);
+
+  for (int i = 0; i < MQTT_MAX_BROKERS; i++) {
+    const MqttBrokerConfigV2 &src = v2->brokers[i];
+    MqttBrokerConfig &dst = _brokers[i];
+    StrHelper::strncpy(dst.uri, src.uri, sizeof(dst.uri));
+    StrHelper::strncpy(dst.username, src.username, sizeof(dst.username));
+    StrHelper::strncpy(dst.password, src.password, sizeof(dst.password));
+    StrHelper::strncpy(dst.topic_root, src.topic_root, sizeof(dst.topic_root));
+    StrHelper::strncpy(dst.iata, src.iata, sizeof(dst.iata));
+    dst.retain_status = src.retain_status;
+    dst.enabled = src.enabled;
+    sanitizeBroker(dst);
+  }
+
+  // Save as v3 format
+  save();
+  Serial.println("MQTT settings: migrated v2 -> v3");
+  return true;
+}
+
+bool MqttSettingsStore::save() {
+  if (_fs == nullptr) return false;
+
+  PersistedMqttConfigV3 v3 = {};
+  v3.magic = CONFIG_MAGIC;
+  v3.version = CONFIG_VERSION;
+  v3.broker_count = (uint8_t)brokerCount();
+  v3.reserved = 0;
+  v3.shared = _shared;
+  sanitizeShared(v3.shared);
+  for (int i = 0; i < MQTT_MAX_BROKERS; i++) {
+    v3.brokers[i] = _brokers[i];
+    sanitizeBroker(v3.brokers[i]);
+  }
+
+  File file = _fs->open(CONFIG_PATH, "w");
+  if (!file) return false;
+
+  size_t bytes_written = file.write((const uint8_t *)&v3, sizeof(v3));
+  file.close();
+  return bytes_written == sizeof(v3);
+}
+
+void MqttSettingsStore::resetToDefaults() {
+  memset(&_shared, 0, sizeof(_shared));
+  memset(_brokers, 0, sizeof(_brokers));
+
+  StrHelper::strncpy(_shared.wifi_ssid, WIFI_SSID, sizeof(_shared.wifi_ssid));
+  StrHelper::strncpy(_shared.wifi_pwd, WIFI_PWD, sizeof(_shared.wifi_pwd));
+  StrHelper::strncpy(_shared.model, MQTT_MODEL, sizeof(_shared.model));
+  StrHelper::strncpy(_shared.client_version, MQTT_CLIENT_VERSION, sizeof(_shared.client_version));
+
+  StrHelper::strncpy(_brokers[0].uri, MQTT_BROKER1_URI, sizeof(_brokers[0].uri));
+  StrHelper::strncpy(_brokers[0].username, MQTT_BROKER1_USERNAME, sizeof(_brokers[0].username));
+  StrHelper::strncpy(_brokers[0].password, MQTT_BROKER1_PASSWORD, sizeof(_brokers[0].password));
+  StrHelper::strncpy(_brokers[0].topic_root, MQTT_BROKER1_TOPIC_ROOT, sizeof(_brokers[0].topic_root));
+  StrHelper::strncpy(_brokers[0].iata, MQTT_BROKER1_IATA, sizeof(_brokers[0].iata));
+  _brokers[0].retain_status = MQTT_BROKER1_RETAIN_STATUS ? 1 : 0;
+  _brokers[0].enabled = MQTT_BROKER1_ENABLED ? 1 : 0;
+
+  StrHelper::strncpy(_brokers[1].uri, MQTT_BROKER2_URI, sizeof(_brokers[1].uri));
+  StrHelper::strncpy(_brokers[1].username, MQTT_BROKER2_USERNAME, sizeof(_brokers[1].username));
+  StrHelper::strncpy(_brokers[1].password, MQTT_BROKER2_PASSWORD, sizeof(_brokers[1].password));
+  StrHelper::strncpy(_brokers[1].topic_root, MQTT_BROKER2_TOPIC_ROOT, sizeof(_brokers[1].topic_root));
+  StrHelper::strncpy(_brokers[1].iata, MQTT_BROKER2_IATA, sizeof(_brokers[1].iata));
+  _brokers[1].retain_status = MQTT_BROKER2_RETAIN_STATUS ? 1 : 0;
+  _brokers[1].enabled = MQTT_BROKER2_ENABLED ? 1 : 0;
+
+  StrHelper::strncpy(_brokers[2].uri, MQTT_BROKER3_URI, sizeof(_brokers[2].uri));
+  StrHelper::strncpy(_brokers[2].username, MQTT_BROKER3_USERNAME, sizeof(_brokers[2].username));
+  StrHelper::strncpy(_brokers[2].password, MQTT_BROKER3_PASSWORD, sizeof(_brokers[2].password));
+  StrHelper::strncpy(_brokers[2].topic_root, MQTT_BROKER3_TOPIC_ROOT, sizeof(_brokers[2].topic_root));
+  StrHelper::strncpy(_brokers[2].iata, MQTT_BROKER3_IATA, sizeof(_brokers[2].iata));
+  _brokers[2].retain_status = MQTT_BROKER3_RETAIN_STATUS ? 1 : 0;
+  _brokers[2].enabled = MQTT_BROKER3_ENABLED ? 1 : 0;
+
+  StrHelper::strncpy(_brokers[3].uri, MQTT_BROKER4_URI, sizeof(_brokers[3].uri));
+  StrHelper::strncpy(_brokers[3].username, MQTT_BROKER4_USERNAME, sizeof(_brokers[3].username));
+  StrHelper::strncpy(_brokers[3].password, MQTT_BROKER4_PASSWORD, sizeof(_brokers[3].password));
+  StrHelper::strncpy(_brokers[3].topic_root, MQTT_BROKER4_TOPIC_ROOT, sizeof(_brokers[3].topic_root));
+  StrHelper::strncpy(_brokers[3].iata, MQTT_BROKER4_IATA, sizeof(_brokers[3].iata));
+  _brokers[3].retain_status = MQTT_BROKER4_RETAIN_STATUS ? 1 : 0;
+  _brokers[3].enabled = MQTT_BROKER4_ENABLED ? 1 : 0;
+
+  StrHelper::strncpy(_brokers[4].uri, MQTT_BROKER5_URI, sizeof(_brokers[4].uri));
+  StrHelper::strncpy(_brokers[4].username, MQTT_BROKER5_USERNAME, sizeof(_brokers[4].username));
+  StrHelper::strncpy(_brokers[4].password, MQTT_BROKER5_PASSWORD, sizeof(_brokers[4].password));
+  StrHelper::strncpy(_brokers[4].topic_root, MQTT_BROKER5_TOPIC_ROOT, sizeof(_brokers[4].topic_root));
+  StrHelper::strncpy(_brokers[4].iata, MQTT_BROKER5_IATA, sizeof(_brokers[4].iata));
+  _brokers[4].retain_status = MQTT_BROKER5_RETAIN_STATUS ? 1 : 0;
+  _brokers[4].enabled = MQTT_BROKER5_ENABLED ? 1 : 0;
+
+  StrHelper::strncpy(_brokers[5].uri, MQTT_BROKER6_URI, sizeof(_brokers[5].uri));
+  StrHelper::strncpy(_brokers[5].username, MQTT_BROKER6_USERNAME, sizeof(_brokers[5].username));
+  StrHelper::strncpy(_brokers[5].password, MQTT_BROKER6_PASSWORD, sizeof(_brokers[5].password));
+  StrHelper::strncpy(_brokers[5].topic_root, MQTT_BROKER6_TOPIC_ROOT, sizeof(_brokers[5].topic_root));
+  StrHelper::strncpy(_brokers[5].iata, MQTT_BROKER6_IATA, sizeof(_brokers[5].iata));
+  _brokers[5].retain_status = MQTT_BROKER6_RETAIN_STATUS ? 1 : 0;
+  _brokers[5].enabled = MQTT_BROKER6_ENABLED ? 1 : 0;
+
+  for (int i = 0; i < MQTT_MAX_BROKERS; i++) {
+    sanitizeBroker(_brokers[i]);
+  }
+}
+
+int MqttSettingsStore::brokerCount() const {
+  int count = 0;
+  for (int i = 0; i < MQTT_MAX_BROKERS; i++) {
+    if (_brokers[i].enabled) count++;
+  }
+  return count;
+}
+
+int MqttSettingsStore::parseKey(const char *key, const char **key_out) {
+  // Check for "N." prefix where N is 1-6
+  if (key[0] >= '1' && key[0] <= '0' + MQTT_MAX_BROKERS && key[1] == '.') {
+    *key_out = key + 2;
+    return key[0] - '1'; // 0-based index
+  }
+  *key_out = key;
+
+  // Shared keys return -1
+  if (strcmp(key, "wifi.ssid") == 0 || strcmp(key, "wifi.pass") == 0 ||
+      strcmp(key, "model") == 0 || strcmp(key, "client.version") == 0) {
+    return -1;
+  }
+
+  // Unindexed per-broker keys default to broker 0
+  return 0;
+}
+
+bool MqttSettingsStore::getValue(const char *key, char *dest, size_t dest_size, bool mask_secret) const {
+  if (key == nullptr || dest == nullptr || dest_size == 0) return false;
+
+  const char *field;
+  int idx = parseKey(key, &field);
+
+  const char *value = nullptr;
+  char masked[8];
+
+  // Shared keys
+  if (idx == -1) {
+    if (strcmp(field, "wifi.ssid") == 0) {
+      value = _shared.wifi_ssid;
+    } else if (strcmp(field, "wifi.pass") == 0) {
+      value = _shared.wifi_pwd;
+    } else if (strcmp(field, "model") == 0) {
+      value = _shared.model;
+    } else if (strcmp(field, "client.version") == 0) {
+      value = _shared.client_version;
+    } else {
+      return false;
+    }
+
+    if (mask_secret && strcmp(field, "wifi.pass") == 0) {
+      value = value[0] ? "******" : "";
+      StrHelper::strncpy(masked, value, sizeof(masked));
+      value = masked;
+    }
+
+    StrHelper::strncpy(dest, value, dest_size);
+    return true;
+  }
+
+  // Per-broker keys
+  if (idx < 0 || idx >= MQTT_MAX_BROKERS) return false;
+  const MqttBrokerConfig &b = _brokers[idx];
+
+  if (strcmp(field, "uri") == 0) {
+    value = b.uri;
+  } else if (strcmp(field, "username") == 0) {
+    value = b.username;
+  } else if (strcmp(field, "password") == 0) {
+    value = b.password;
+  } else if (strcmp(field, "topic.root") == 0) {
+    value = b.topic_root;
+  } else if (strcmp(field, "iata") == 0) {
+    value = b.iata;
+  } else if (strcmp(field, "retain.status") == 0) {
+    value = b.retain_status ? "1" : "0";
+  } else if (strcmp(field, "enabled") == 0) {
+    value = b.enabled ? "1" : "0";
+  } else {
+    return false;
+  }
+
+  if (mask_secret && strcmp(field, "password") == 0) {
+    value = value[0] ? "******" : "";
+    StrHelper::strncpy(masked, value, sizeof(masked));
+    value = masked;
+  }
+
+  StrHelper::strncpy(dest, value, dest_size);
+  return true;
+}
+
+bool MqttSettingsStore::setValue(const char *key, const char *value) {
+  if (key == nullptr || value == nullptr) return false;
+
+  const char *field;
+  int idx = parseKey(key, &field);
+
+  // Shared keys
+  if (idx == -1) {
+    if (strcmp(field, "wifi.ssid") == 0) {
+      StrHelper::strncpy(_shared.wifi_ssid, value, sizeof(_shared.wifi_ssid));
+    } else if (strcmp(field, "wifi.pass") == 0) {
+      StrHelper::strncpy(_shared.wifi_pwd, value, sizeof(_shared.wifi_pwd));
+    } else if (strcmp(field, "model") == 0) {
+      StrHelper::strncpy(_shared.model, value, sizeof(_shared.model));
+    } else if (strcmp(field, "client.version") == 0) {
+      StrHelper::strncpy(_shared.client_version, value, sizeof(_shared.client_version));
+    } else {
+      return false;
+    }
+    sanitizeShared(_shared);
+    return true;
+  }
+
+  // Per-broker keys
+  if (idx < 0 || idx >= MQTT_MAX_BROKERS) return false;
+  MqttBrokerConfig &b = _brokers[idx];
+
+  if (strcmp(field, "uri") == 0) {
+    StrHelper::strncpy(b.uri, value, sizeof(b.uri));
+  } else if (strcmp(field, "username") == 0) {
+    StrHelper::strncpy(b.username, value, sizeof(b.username));
+  } else if (strcmp(field, "password") == 0) {
+    StrHelper::strncpy(b.password, value, sizeof(b.password));
+  } else if (strcmp(field, "topic.root") == 0) {
+    StrHelper::strncpy(b.topic_root, value, sizeof(b.topic_root));
+  } else if (strcmp(field, "iata") == 0) {
+    StrHelper::strncpy(b.iata, value, sizeof(b.iata));
+  } else if (strcmp(field, "retain.status") == 0) {
+    b.retain_status = (strcmp(value, "0") == 0 || strcasecmp(value, "off") == 0 || strcasecmp(value, "false") == 0) ? 0 : 1;
+  } else if (strcmp(field, "enabled") == 0) {
+    b.enabled = (strcmp(value, "0") == 0 || strcasecmp(value, "off") == 0 || strcasecmp(value, "false") == 0) ? 0 : 1;
+  } else {
+    return false;
+  }
+
+  sanitizeBroker(b);
+  return true;
+}
+
+void MqttSettingsStore::sanitizeShared(MqttSharedConfig &cfg) {
+  cfg.wifi_ssid[sizeof(cfg.wifi_ssid) - 1] = '\0';
+  cfg.wifi_pwd[sizeof(cfg.wifi_pwd) - 1] = '\0';
+  cfg.model[sizeof(cfg.model) - 1] = '\0';
+  cfg.client_version[sizeof(cfg.client_version) - 1] = '\0';
+
+  if (cfg.model[0] == '\0') {
+    StrHelper::strncpy(cfg.model, MQTT_MODEL, sizeof(cfg.model));
+  }
+  if (cfg.client_version[0] == '\0') {
+    StrHelper::strncpy(cfg.client_version, MQTT_CLIENT_VERSION, sizeof(cfg.client_version));
+  }
+}
+
+void MqttSettingsStore::sanitizeBroker(MqttBrokerConfig &cfg) {
+  cfg.uri[sizeof(cfg.uri) - 1] = '\0';
+  cfg.username[sizeof(cfg.username) - 1] = '\0';
+  cfg.password[sizeof(cfg.password) - 1] = '\0';
+  cfg.topic_root[sizeof(cfg.topic_root) - 1] = '\0';
+  cfg.iata[sizeof(cfg.iata) - 1] = '\0';
+
+  if (cfg.topic_root[0] == '\0') {
+    StrHelper::strncpy(cfg.topic_root, MQTT_TOPIC_ROOT, sizeof(cfg.topic_root));
+  }
+  if (cfg.iata[0] == '\0') {
+    StrHelper::strncpy(cfg.iata, MQTT_IATA, sizeof(cfg.iata));
+  }
+  cfg.retain_status = cfg.retain_status ? 1 : 0;
+  cfg.enabled = cfg.enabled ? 1 : 0;
+}
+
+#endif
