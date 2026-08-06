@@ -34,19 +34,26 @@ from pathlib import Path
 
 repo_root = Path(sys.argv[1])
 env_re = re.compile(r'^\[env:([^\]]+)\]$')
-esp_base_re = re.compile(r'^\s*extends\s*=\s*esp32_base\s*$')
+esp_base_re = re.compile(r'^\s*extends\s*=\s*(esp32_base|esp32c6_base)\s*$')
 repeater_re = re.compile(r'(^|_)repeater_?$')
+board_re = re.compile(r'^\s*board\s*=\s*([^\s;]+)')
 
 for ini_path in sorted((repo_root / "variants").glob("*/platformio.ini")):
     text = ini_path.read_text(encoding="utf-8", errors="ignore").splitlines()
     if not any(esp_base_re.match(line.strip()) for line in text):
         continue
+    board_match = next((board_re.match(line) for line in text if board_re.match(line)), None)
+    board = board_match.group(1).lower() if board_match else ""
     for line in text:
         match = env_re.match(line.strip())
         if not match:
             continue
         env_name = match.group(1)
         if repeater_re.search(env_name):
+            target = f"{ini_path.parent.name} {board} {env_name}".lower()
+            if "c3" in target or "c6" in target:
+                print(f"Skipping unsupported RISC-V MQTT target: {env_name}", file=sys.stderr)
+                continue
             print(env_name)
 PY
 }
@@ -155,8 +162,8 @@ for e in "${FAIL[@]}"; do
 done
 
 if [ "${#FAIL[@]}" -gt 0 ]; then
-  echo "Some targets failed (C6/C3 experimental boards are expected to fail)."
-  echo "Release will include only passing targets."
+  echo "ERROR: supported MQTT targets failed to build."
+  exit 1
 fi
 
 if [ "${#PASS[@]}" -eq 0 ]; then

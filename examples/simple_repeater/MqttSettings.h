@@ -171,7 +171,7 @@
 #endif
 
 #ifndef MQTT_CLIENT_VERSION
-  #define MQTT_CLIENT_VERSION "custom-mqtt-observer/1.0.0"
+  #define MQTT_CLIENT_VERSION "meshcore-mqtt/v1.16.0-rev2"
 #endif
 
 #ifndef MQTT_MODEL
