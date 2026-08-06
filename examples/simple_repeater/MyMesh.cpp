@@ -469,6 +469,10 @@ const char *MyMesh::getLogDateTime() {
 }
 
 void MyMesh::logRxRaw(float snr, float rssi, const uint8_t raw[], int len) {
+#if defined(ESP32) && defined(WITH_MQTT_REPORTER)
+  mqtt_reporter.publishRxRaw(raw, len);
+#endif
+
 #if MESH_PACKET_LOGGING
   Serial.print(getLogDateTime());
   Serial.print(" RAW: ");
@@ -478,6 +482,10 @@ void MyMesh::logRxRaw(float snr, float rssi, const uint8_t raw[], int len) {
 }
 
 void MyMesh::logRx(mesh::Packet *pkt, int len, float score) {
+#if defined(ESP32) && defined(WITH_MQTT_REPORTER)
+  mqtt_reporter.publishRxPacket(pkt, len, score, _radio->getLastRSSI(), _radio->getLastSNR(), _radio->getEstAirtimeFor(len));
+#endif
+
 #ifdef WITH_BRIDGE
   if (_prefs.bridge_pkt_src == 1) {
     bridge.sendPacket(pkt);
@@ -504,6 +512,10 @@ void MyMesh::logRx(mesh::Packet *pkt, int len, float score) {
 }
 
 void MyMesh::logTx(mesh::Packet *pkt, int len) {
+#if defined(ESP32) && defined(WITH_MQTT_REPORTER)
+  mqtt_reporter.publishTxPacket(pkt, len);
+#endif
+
 #ifdef WITH_BRIDGE
   if (_prefs.bridge_pkt_src == 0) {
     bridge.sendPacket(pkt);
@@ -530,6 +542,10 @@ void MyMesh::logTx(mesh::Packet *pkt, int len) {
 
 void MyMesh::logTxFail(mesh::Packet *pkt, int len) {
   tx_fail_count++;
+#if defined(ESP32) && defined(WITH_MQTT_REPORTER)
+  mqtt_reporter.publishTxFail(pkt, len);
+#endif
+
   if (_logging) {
     File f = openAppend(PACKET_LOG_FILE);
     if (f) {
@@ -1007,7 +1023,9 @@ void MyMesh::savePrefs() {
 #else
 #error "need to define savePrefs()"
 #endif
-  store.save("_main", self_id, _prefs.node_name);
+  if (!store.save("_main", self_id, _prefs.node_name)) {
+    Serial.println("WARNING: failed to persist repeater identity after saving preferences");
+  }
 }
 
 void MyMesh::applyTempRadioParams(float freq, float bw, uint8_t sf, uint8_t cr, int timeout_mins) {

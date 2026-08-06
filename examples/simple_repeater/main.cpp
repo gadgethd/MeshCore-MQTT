@@ -111,6 +111,7 @@ void setup() {
   Serial.printf("[boot] after begin() name='%s' lat=%f lon=%f\n",
                 the_mesh.getNodeName(), the_mesh.getNodePrefs()->node_lat, the_mesh.getNodePrefs()->node_lon);
 #if defined(ESP32) && defined(WITH_MQTT_REPORTER)
+  board.setInhibitSleep(true);   // keep STA Wi-Fi awake for MQTT + OTA
   mqtt_reporter.begin(fs);
 #endif
 #ifdef DISPLAY_CLASS
@@ -169,6 +170,9 @@ void loop() {
 
   the_mesh.loop();
   sensors.loop();
+#if defined(ESP32) && defined(WITH_MQTT_REPORTER)
+  mqtt_reporter.loop();
+#endif
 #ifdef DISPLAY_CLASS
   ui_task.loop();
 #endif

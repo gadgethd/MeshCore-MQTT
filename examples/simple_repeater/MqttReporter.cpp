@@ -9,9 +9,14 @@
 
 extern "C" esp_err_t esp_crt_bundle_attach(void *conf);
 
+std::atomic<MqttReporter *> MqttReporter::s_instance{nullptr};
+
 namespace {
 
 constexpr unsigned long MQTT_DEBUG_STATS_INTERVAL_MS = 60000UL;
+constexpr unsigned long MQTT_NTP_RETRY_INTERVAL_MS = 30000UL;
+constexpr unsigned long MQTT_NTP_TIMEOUT_MS = 10000UL;
+constexpr time_t MQTT_VALID_EPOCH = 1700000000;
 
 String replaceToken(String value, const char *token, const char *replacement) {
   value.replace(token, replacement);
@@ -58,17 +63,26 @@ String buildPacketsTopicPath(const char *topic_root, const char *iata, const cha
 MqttReporter::MqttReporter(MyMesh &mesh, mesh::RTCClock &clock)
     : _mesh(&mesh), _clock(&clock) {
   _last_wifi_attempt = 0;
+  _wifi_attempted = false;
   _last_stats_print = 0;
   _last_ntp_attempt = 0;
+  _ntp_attempted = false;
+  _ntp_sync_started_at = 0;
+  _ntp_sync_pending = false;
   _time_synced = false;
   _origin_id[0] = '\0';
   _client_id[0] = '\0';
   _rx_publish_calls = 0;
   _tx_publish_calls = 0;
+  _tx_fail_publish_calls = 0;
   _publish_skipped_no_connection = 0;
   _wifi_reconnect_attempts = 0;
+  _wifi_consecutive_failures = 0;
   _loop_iterations = 0;
   _min_free_heap = UINT32_MAX;
+  _last_wifi_disconnect_reason = -1;
+  _wifi_got_ip = false;
+  _wifi_last_ip = "";
   _last_cpu_sample_ms = 0;
   _idle_pct_core0 = -1.0f;
   _idle_pct_core1 = -1.0f;
@@ -83,6 +97,11 @@ MqttReporter::MqttReporter(MyMesh &mesh, mesh::RTCClock &clock)
     _clients[i].status_topic[0] = '\0';
     _clients[i].packets_topic[0] = '\0';
     _clients[i].last_status_publish = 0;
+    _clients[i].queue_head = 0;
+    _clients[i].queue_tail = 0;
+    _clients[i].queue_count = 0;
+    _clients[i].status_queued = false;
+    _clients[i].online_status_pending = false;
     _clients[i].connect_attempts = 0;
     _clients[i].connect_start_failures = 0;
     _clients[i].connect_events = 0;
@@ -91,12 +110,24 @@ MqttReporter::MqttReporter(MyMesh &mesh, mesh::RTCClock &clock)
     _clients[i].status_publish_count = 0;
     _clients[i].packet_publish_count = 0;
     _clients[i].publish_failures = 0;
+    _clients[i].queue_drops = 0;
+    for (uint8_t q = 0; q < MQTT_PUBLISH_QUEUE_SIZE; q++) {
+      _clients[i].publish_queue[q].qos = 0;
+      _clients[i].publish_queue[q].retain = false;
+      _clients[i].publish_queue[q].is_status = false;
+      _clients[i].publish_queue[q].pending = false;
+    }
     _event_ctx[i].reporter = this;
     _event_ctx[i].broker_idx = i;
   }
+
+  // WiFi callbacks are registered in begin(), after construction is complete.
+  s_instance.store(this, std::memory_order_release);
 }
 
 MqttReporter::~MqttReporter() {
+  MqttReporter *expected = this;
+  s_instance.compare_exchange_strong(expected, nullptr, std::memory_order_acq_rel);
   for (int i = 0; i < MQTT_MAX_BROKERS; i++) {
     if (_clients[i].client != nullptr) {
       esp_mqtt_client_stop(_clients[i].client);
@@ -117,6 +148,20 @@ void MqttReporter::begin(FILESYSTEM *fs) {
   WiFi.mode(WIFI_STA);
   WiFi.setAutoReconnect(true);
   WiFi.setSleep(false);
+  WiFi.onEvent([](WiFiEvent_t event, WiFiEventInfo_t info) {
+    MqttReporter *self = s_instance.load(std::memory_order_acquire);
+    if (self == nullptr) return;
+    if (event == ARDUINO_EVENT_WIFI_STA_DISCONNECTED) {
+      self->_last_wifi_disconnect_reason = info.wifi_sta_disconnected.reason;
+      self->_wifi_got_ip = false;
+      Serial.printf("MQTT reporter: WiFi disconnected, reason=%d\n",
+                    self->_last_wifi_disconnect_reason);
+    } else if (event == ARDUINO_EVENT_WIFI_STA_GOT_IP) {
+      self->_wifi_got_ip = true;
+      self->_wifi_last_ip = WiFi.localIP().toString();
+      Serial.printf("MQTT reporter: WiFi got IP: %s\n", self->_wifi_last_ip.c_str());
+    }
+  });
 
   const MqttSharedConfig &shared = _settings.shared();
   Serial.printf("MQTT reporter: WiFi SSID='%s'\n", shared.wifi_ssid);
@@ -139,11 +184,15 @@ void MqttReporter::loop() {
   if (WiFi.status() != WL_CONNECTED) {
     for (int i = 0; i < MQTT_MAX_BROKERS; i++) {
       _clients[i].connected = false;
+      _clients[i].started = false;
+      _clients[i].online_status_pending = false;
+      clearPublishQueue(i);
     }
     connectWiFi();
     maybePrintPeriodicStats();
     return;
   }
+  _wifi_consecutive_failures = 0;
 
   // Check if any enabled broker needs NTP
   bool any_needs_sync = false;
@@ -155,11 +204,13 @@ void MqttReporter::loop() {
   }
 
   if (!_time_synced && any_needs_sync) {
-    if (now - _last_ntp_attempt >= 30000UL) {
+    checkNtpSyncComplete();
+    if (!_time_synced && !_ntp_sync_pending &&
+        (!_ntp_attempted || (uint32_t)(now - _last_ntp_attempt) >= MQTT_NTP_RETRY_INTERVAL_MS)) {
       _last_ntp_attempt = now;
+      _ntp_attempted = true;
       syncTimeFromNtp();
     }
-    if (!_time_synced) return;
   }
 
   // Connect/maintain all enabled brokers
@@ -173,10 +224,18 @@ void MqttReporter::loop() {
 
   // Periodic status for connected brokers
   for (int i = 0; i < MQTT_MAX_BROKERS; i++) {
-    if (_clients[i].connected) {
+    BrokerClient &bc = _clients[i];
+    if (bc.connected) {
+      if (bc.online_status_pending) {
+        bc.online_status_pending = false;
+        publishStatus(i, "online");
+      }
       if (now - _clients[i].last_status_publish >= (unsigned long)MQTT_STATUS_INTERVAL_SECS * 1000UL) {
         publishStatus(i, "online");
       }
+      drainPublishQueue(i);
+    } else {
+      clearPublishQueue(i);
     }
   }
 
@@ -195,28 +254,22 @@ void MqttReporter::publishRxPacket(mesh::Packet *pkt, int len, float score, int 
   if (pkt == nullptr) return;
   _rx_publish_calls++;
 
-  bool any_connected = false;
-  for (int i = 0; i < MQTT_MAX_BROKERS; i++) {
-    if (_clients[i].connected && _clients[i].client != nullptr) {
-      any_connected = true;
-      break;
-    }
-  }
-  if (!any_connected) {
+  String raw_hex = _last_rx_raw;
+  _last_rx_raw = "";
+
+  if (!anyBrokerConnected()) {
     _publish_skipped_no_connection++;
     return;
   }
 
-  String raw_hex = _last_rx_raw.length() ? _last_rx_raw : bytesToHex(pkt->payload, pkt->payload_len);
+  if (raw_hex.length() == 0) {
+    raw_hex = bytesToHex(pkt->payload, pkt->payload_len);
+  }
   String payload = buildPacketPayload("rx", pkt, len, raw_hex, score, rssi, snr, duration_ms, true);
 
   for (int i = 0; i < MQTT_MAX_BROKERS; i++) {
     if (_clients[i].connected && _clients[i].client != nullptr) {
-      if (esp_mqtt_client_publish(_clients[i].client, _clients[i].packets_topic, payload.c_str(), 0, 0, 0) < 0) {
-        _clients[i].publish_failures++;
-      } else {
-        _clients[i].packet_publish_count++;
-      }
+      enqueuePublish(i, _clients[i].packets_topic, payload, 0, false, false);
     }
   }
 }
@@ -225,14 +278,7 @@ void MqttReporter::publishTxPacket(mesh::Packet *pkt, int len) {
   if (pkt == nullptr) return;
   _tx_publish_calls++;
 
-  bool any_connected = false;
-  for (int i = 0; i < MQTT_MAX_BROKERS; i++) {
-    if (_clients[i].connected && _clients[i].client != nullptr) {
-      any_connected = true;
-      break;
-    }
-  }
-  if (!any_connected) {
+  if (!anyBrokerConnected()) {
     _publish_skipped_no_connection++;
     return;
   }
@@ -243,11 +289,27 @@ void MqttReporter::publishTxPacket(mesh::Packet *pkt, int len) {
 
   for (int i = 0; i < MQTT_MAX_BROKERS; i++) {
     if (_clients[i].connected && _clients[i].client != nullptr) {
-      if (esp_mqtt_client_publish(_clients[i].client, _clients[i].packets_topic, payload.c_str(), 0, 0, 0) < 0) {
-        _clients[i].publish_failures++;
-      } else {
-        _clients[i].packet_publish_count++;
-      }
+      enqueuePublish(i, _clients[i].packets_topic, payload, 0, false, false);
+    }
+  }
+}
+
+void MqttReporter::publishTxFail(mesh::Packet *pkt, int len) {
+  if (pkt == nullptr) return;
+  _tx_fail_publish_calls++;
+
+  if (!anyBrokerConnected()) {
+    _publish_skipped_no_connection++;
+    return;
+  }
+
+  uint8_t raw[MAX_TRANS_UNIT];
+  int raw_len = pkt->writeTo(raw);
+  String payload = buildPacketPayload("tx_fail", pkt, len, bytesToHex(raw, raw_len), 0.0f, 0, 0.0f, 0, false);
+
+  for (int i = 0; i < MQTT_MAX_BROKERS; i++) {
+    if (_clients[i].connected && _clients[i].client != nullptr) {
+      enqueuePublish(i, _clients[i].packets_topic, payload, 0, false, false);
     }
   }
 }
@@ -255,8 +317,10 @@ void MqttReporter::publishTxPacket(mesh::Packet *pkt, int len) {
 void MqttReporter::ensureIdentityStrings() {
   if (_origin_id[0] == '\0') {
     const mesh::LocalIdentity &self = _mesh->getSelfId();
+    static const char hex_chars[] = "0123456789ABCDEF";
     for (size_t i = 0; i < PUB_KEY_SIZE; ++i) {
-      snprintf(&_origin_id[i * 2], 3, "%02X", self.pub_key[i]);
+      _origin_id[i * 2] = hex_chars[self.pub_key[i] >> 4];
+      _origin_id[i * 2 + 1] = hex_chars[self.pub_key[i] & 0x0F];
     }
     _origin_id[PUB_KEY_SIZE * 2] = '\0';
 
@@ -282,8 +346,10 @@ void MqttReporter::resetBrokerConnection(int idx) {
     esp_mqtt_client_destroy(bc.client);
     bc.client = nullptr;
   }
+  clearPublishQueue(idx);
   bc.started = false;
   bc.connected = false;
+  bc.online_status_pending = false;
 }
 
 void MqttReporter::resetAllConnections() {
@@ -291,6 +357,8 @@ void MqttReporter::resetAllConnections() {
     resetBrokerConnection(i);
   }
   _last_wifi_attempt = 0;
+  _wifi_attempted = false;
+  _wifi_consecutive_failures = 0;
 
   if (WiFi.getMode() != WIFI_STA) {
     WiFi.mode(WIFI_STA);
@@ -306,11 +374,18 @@ bool MqttReporter::connectWiFi() {
   if (shared.wifi_ssid[0] == '\0') return false;
 
   unsigned long now = millis();
-  if (now - _last_wifi_attempt < 5000UL) return false;
+  uint8_t shift = _wifi_consecutive_failures > 0 ? _wifi_consecutive_failures - 1 : 0;
+  if (shift > 6) shift = 6;
+  unsigned long retry_delay = 5000UL << shift;
+  if (retry_delay > 300000UL) retry_delay = 300000UL;
+  if (_wifi_attempted && (uint32_t)(now - _last_wifi_attempt) < retry_delay) return false;
   _last_wifi_attempt = now;
+  _wifi_attempted = true;
   _wifi_reconnect_attempts++;
+  if (_wifi_consecutive_failures < UINT8_MAX) _wifi_consecutive_failures++;
 
-  Serial.printf("MQTT reporter: connecting WiFi to '%s'\n", shared.wifi_ssid);
+  Serial.printf("MQTT reporter: connecting WiFi to '%s' (retry in %lu ms if needed)\n",
+                shared.wifi_ssid, retry_delay);
   WiFi.begin(shared.wifi_ssid, shared.wifi_pwd);
   return false;
 }
@@ -325,6 +400,17 @@ bool MqttReporter::connectMQTT(int idx) {
   if (broker.uri[0] == '\0') return false;
   if (brokerNeedsTimeSync(idx) && !_time_synced) return false;
   bc.connect_attempts++;
+
+  // A disconnect/error event leaves the old client handle allocated. Dispose of
+  // it here, outside the MQTT event callback, before creating its replacement.
+  if (bc.client != nullptr) {
+    esp_mqtt_client_stop(bc.client);
+    esp_mqtt_client_destroy(bc.client);
+    bc.client = nullptr;
+  }
+  clearPublishQueue(idx);
+  bc.connected = false;
+  bc.online_status_pending = false;
 
   // Use a unique client_id per broker
   char broker_client_id[48];
@@ -363,35 +449,43 @@ bool MqttReporter::connectMQTT(int idx) {
     return false;
   }
 
+  // Set before start so a fast disconnect/error callback cannot be overwritten
+  // by a late assignment after esp_mqtt_client_start() returns.
+  bc.started = true;
   if (esp_mqtt_client_start(bc.client) != ESP_OK) {
     bc.connect_start_failures++;
     Serial.printf("MQTT reporter: broker %d esp_mqtt_client_start failed\n", idx + 1);
     esp_mqtt_client_destroy(bc.client);
     bc.client = nullptr;
+    bc.started = false;
     return false;
   }
 
   Serial.printf("MQTT reporter: broker %d MQTT client started\n", idx + 1);
-  bc.started = true;
   return true;
 }
 
 void MqttReporter::syncTimeFromNtp() {
   configTime(0, 0, MQTT_NTP_SERVER);
+  _ntp_sync_started_at = millis();
+  _ntp_sync_pending = true;
+  Serial.println("MQTT reporter: NTP sync started");
+}
 
+void MqttReporter::checkNtpSyncComplete() {
   time_t now = time(nullptr);
-  unsigned long start = millis();
-  while (now < 1700000000 && millis() - start < 10000UL) {
-    delay(200);
-    now = time(nullptr);
-  }
-
-  if (now >= 1700000000) {
+  if (now >= MQTT_VALID_EPOCH) {
     _clock->setCurrentTime((uint32_t)now);
     _time_synced = true;
+    _ntp_sync_pending = false;
     Serial.println("MQTT reporter: NTP sync complete");
-  } else {
-    Serial.println("MQTT reporter: NTP sync failed");
+    return;
+  }
+
+  if (_ntp_sync_pending &&
+      (uint32_t)(millis() - _ntp_sync_started_at) >= MQTT_NTP_TIMEOUT_MS) {
+    _ntp_sync_pending = false;
+    Serial.println("MQTT reporter: NTP sync timed out; will retry");
   }
 }
 
@@ -399,15 +493,117 @@ void MqttReporter::publishStatus(int idx, const char *status) {
   if (idx < 0 || idx >= MQTT_MAX_BROKERS) return;
   BrokerClient &bc = _clients[idx];
   if (!bc.connected || bc.client == nullptr) return;
+  if (bc.status_queued) return;
 
   String payload = buildStatusPayload(idx, status);
-  if (esp_mqtt_client_publish(bc.client, bc.status_topic, payload.c_str(), 0, 0,
-                              _settings.broker(idx).retain_status != 0) < 0) {
+  enqueuePublish(idx, bc.status_topic, payload, 0,
+                 _settings.broker(idx).retain_status != 0, true);
+}
+
+bool MqttReporter::enqueuePublish(
+    int idx, const char *topic, const String &payload, uint8_t qos, bool retain, bool is_status) {
+  if (idx < 0 || idx >= MQTT_MAX_BROKERS || topic == nullptr) return false;
+  BrokerClient &bc = _clients[idx];
+  if (!bc.connected || bc.client == nullptr) return false;
+  if (is_status && bc.status_queued) return true;
+
+  if (bc.queue_count == MQTT_PUBLISH_QUEUE_SIZE) {
+    PublishEntry &dropped = bc.publish_queue[bc.queue_head];
+    if (dropped.is_status) bc.status_queued = false;
+    dropped.topic = "";
+    dropped.payload = "";
+    dropped.pending = false;
+    bc.queue_head = (uint8_t)((bc.queue_head + 1) % MQTT_PUBLISH_QUEUE_SIZE);
+    bc.queue_count--;
+    bc.queue_drops++;
     bc.publish_failures++;
-  } else {
-    bc.status_publish_count++;
-    bc.last_status_publish = millis();
   }
+
+  PublishEntry &entry = bc.publish_queue[bc.queue_tail];
+  entry.topic = topic;
+  entry.payload = payload;
+  if (entry.topic.length() != strlen(topic) || entry.payload.length() != payload.length()) {
+    entry.topic = "";
+    entry.payload = "";
+    entry.pending = false;
+    bc.publish_failures++;
+    return false;
+  }
+  entry.qos = qos;
+  entry.retain = retain;
+  entry.is_status = is_status;
+  entry.pending = true;
+  bc.queue_tail = (uint8_t)((bc.queue_tail + 1) % MQTT_PUBLISH_QUEUE_SIZE);
+  bc.queue_count++;
+  if (is_status) bc.status_queued = true;
+  return true;
+}
+
+void MqttReporter::drainPublishQueue(int idx, uint8_t max_publishes) {
+  if (idx < 0 || idx >= MQTT_MAX_BROKERS) return;
+  BrokerClient &bc = _clients[idx];
+  if (!bc.connected || bc.client == nullptr) {
+    clearPublishQueue(idx);
+    return;
+  }
+
+  uint8_t published = 0;
+  while (bc.queue_count > 0 && published < max_publishes) {
+    PublishEntry &entry = bc.publish_queue[bc.queue_head];
+    bool was_status = entry.is_status;
+    int message_id = -1;
+    if (entry.pending) {
+      message_id = esp_mqtt_client_publish(
+          bc.client,
+          entry.topic.c_str(),
+          entry.payload.c_str(),
+          entry.payload.length(),
+          entry.qos,
+          entry.retain);
+    }
+
+    if (message_id < 0) {
+      bc.publish_failures++;
+    } else if (was_status) {
+      bc.status_publish_count++;
+      bc.last_status_publish = millis();
+    } else {
+      bc.packet_publish_count++;
+    }
+
+    if (was_status) bc.status_queued = false;
+    entry.topic = "";
+    entry.payload = "";
+    entry.pending = false;
+    entry.is_status = false;
+    bc.queue_head = (uint8_t)((bc.queue_head + 1) % MQTT_PUBLISH_QUEUE_SIZE);
+    bc.queue_count--;
+    published++;
+  }
+}
+
+void MqttReporter::clearPublishQueue(int idx) {
+  if (idx < 0 || idx >= MQTT_MAX_BROKERS) return;
+  BrokerClient &bc = _clients[idx];
+  while (bc.queue_count > 0) {
+    PublishEntry &entry = bc.publish_queue[bc.queue_head];
+    entry.topic = "";
+    entry.payload = "";
+    entry.pending = false;
+    entry.is_status = false;
+    bc.queue_head = (uint8_t)((bc.queue_head + 1) % MQTT_PUBLISH_QUEUE_SIZE);
+    bc.queue_count--;
+  }
+  bc.queue_head = 0;
+  bc.queue_tail = 0;
+  bc.status_queued = false;
+}
+
+bool MqttReporter::anyBrokerConnected() const {
+  for (int i = 0; i < MQTT_MAX_BROKERS; i++) {
+    if (_clients[i].connected && _clients[i].client != nullptr) return true;
+  }
+  return false;
 }
 
 void MqttReporter::handleMqttEvent(int broker_idx, esp_mqtt_event_handle_t event) {
@@ -416,20 +612,25 @@ void MqttReporter::handleMqttEvent(int broker_idx, esp_mqtt_event_handle_t event
 
   switch (event->event_id) {
     case MQTT_EVENT_CONNECTED:
+      bc.started = true;
       bc.connected = true;
+      bc.online_status_pending = true;
       bc.connect_events++;
       Serial.printf("MQTT reporter: broker %d connected\n", broker_idx + 1);
-      publishStatus(broker_idx, "online");
       break;
     case MQTT_EVENT_DISCONNECTED:
       Serial.printf("MQTT reporter: broker %d disconnected\n", broker_idx + 1);
       bc.connected = false;
+      bc.started = false;
+      bc.online_status_pending = false;
       bc.disconnect_events++;
       break;
     case MQTT_EVENT_ERROR:
       Serial.printf("MQTT reporter: broker %d error type=%d\n", broker_idx + 1,
                      event->error_handle ? event->error_handle->error_type : -1);
       bc.connected = false;
+      bc.started = false;
+      bc.online_status_pending = false;
       bc.error_events++;
       break;
     default:
@@ -502,12 +703,15 @@ void MqttReporter::appendCpuIdleStats(String &stats) const {
 }
 
 String MqttReporter::buildStatusStatsPayload(int broker_idx) const {
-  String stats = "{";
+  String stats;
+  stats.reserve(768);
+  stats = "{";
   stats += "\"uptime_ms\":" + String(millis());
   stats += ",\"loop_iterations\":" + String(_loop_iterations);
   stats += ",\"wifi_reconnect_attempts\":" + String(_wifi_reconnect_attempts);
   stats += ",\"rx_publish_calls\":" + String(_rx_publish_calls);
   stats += ",\"tx_publish_calls\":" + String(_tx_publish_calls);
+  stats += ",\"tx_fail_publish_calls\":" + String(_tx_fail_publish_calls);
   stats += ",\"publish_skipped_no_connection\":" + String(_publish_skipped_no_connection);
   stats += ",\"forward_successes\":" + String(_mesh->getForwardSuccessCount());
   stats += ",\"forward_successes_flood\":" + String(_mesh->getForwardFloodSuccessCount());
@@ -533,6 +737,8 @@ String MqttReporter::buildStatusStatsPayload(int broker_idx) const {
     stats += ",\"status_publishes\":" + String(bc.status_publish_count);
     stats += ",\"packet_publishes\":" + String(bc.packet_publish_count);
     stats += ",\"publish_failures\":" + String(bc.publish_failures);
+    stats += ",\"publish_queue_depth\":" + String(bc.queue_count);
+    stats += ",\"publish_queue_drops\":" + String(bc.queue_drops);
     stats += ",\"connected\":" + String(bc.connected ? "true" : "false");
     stats += "}";
   }
@@ -543,7 +749,9 @@ String MqttReporter::buildStatusStatsPayload(int broker_idx) const {
 
 String MqttReporter::buildStatusPayload(int broker_idx, const char *status) const {
   const MqttSharedConfig &shared = _settings.shared();
-  String payload = "{";
+  String payload;
+  payload.reserve(1200);
+  payload = "{";
   if (status != nullptr && status[0] != '\0') {
     payload += "\"status\":\"" + jsonEscape(status) + "\",";
   }
@@ -573,7 +781,9 @@ String MqttReporter::buildPacketPayload(
   pkt->calculatePacketHash(packet_hash);
   String hash_hex = bytesToHex(packet_hash, MAX_HASH_SIZE);
 
-  String payload = "{";
+  String payload;
+  payload.reserve(512 + raw_hex.length());
+  payload = "{";
   payload += "\"origin\":\"" + jsonEscape(_mesh->getNodeName()) + "\"";
   payload += ",\"origin_id\":\"" + String(_origin_id) + "\"";
   payload += ",\"timestamp\":\"" + jsonEscape(buildIsoTimestamp().c_str()) + "\"";
@@ -725,6 +935,10 @@ void MqttReporter::printBrokerStats(Print &out, int idx) const {
   out.println(line);
   snprintf(line, sizeof(line), "    publish.failures=%lu", (unsigned long)bc.publish_failures);
   out.println(line);
+  snprintf(line, sizeof(line), "    publish.queue_depth=%u", (unsigned int)bc.queue_count);
+  out.println(line);
+  snprintf(line, sizeof(line), "    publish.queue_drops=%lu", (unsigned long)bc.queue_drops);
+  out.println(line);
   snprintf(line, sizeof(line), "    connected=%s", bc.connected ? "yes" : "no");
   out.println(line);
 }
@@ -781,6 +995,8 @@ void MqttReporter::printStats(Print &out, int broker_idx) const {
   out.println(line);
   snprintf(line, sizeof(line), "  tx.publish.calls=%lu", (unsigned long)_tx_publish_calls);
   out.println(line);
+  snprintf(line, sizeof(line), "  tx_fail.publish.calls=%lu", (unsigned long)_tx_fail_publish_calls);
+  out.println(line);
   snprintf(line, sizeof(line), "  publish.skipped.no_connection=%lu", (unsigned long)_publish_skipped_no_connection);
   out.println(line);
   snprintf(line, sizeof(line), "  heap.free=%u", (unsigned int)ESP.getFreeHeap());
@@ -790,6 +1006,12 @@ void MqttReporter::printStats(Print &out, int broker_idx) const {
   snprintf(line, sizeof(line), "  heap.min_seen_since_boot=%u", (unsigned int)_min_free_heap);
   out.println(line);
   snprintf(line, sizeof(line), "  wifi.connected=%s", isWiFiConnected() ? "yes" : "no");
+  out.println(line);
+  snprintf(line, sizeof(line), "  wifi.got_ip=%s", _wifi_got_ip ? "yes" : "no");
+  out.println(line);
+  snprintf(line, sizeof(line), "  wifi.last_disconnect_reason=%d", _last_wifi_disconnect_reason);
+  out.println(line);
+  snprintf(line, sizeof(line), "  wifi.last_ip=%s", _wifi_last_ip.length() ? _wifi_last_ip.c_str() : "");
   out.println(line);
 
   if (broker_idx >= 0 && broker_idx < MQTT_MAX_BROKERS) {
@@ -826,6 +1048,7 @@ esp_err_t MqttReporter::mqttEventHandler(esp_mqtt_event_handle_t event) {
 String MqttReporter::jsonEscape(const char *input) {
   String out;
   if (input == nullptr) return out;
+  out.reserve(strlen(input) + 8);
 
   while (*input) {
     char c = *input++;
@@ -856,10 +1079,10 @@ String MqttReporter::jsonEscape(const char *input) {
 String MqttReporter::bytesToHex(const uint8_t *data, size_t len) {
   String out;
   out.reserve(len * 2);
+  static const char hex_chars[] = "0123456789ABCDEF";
   for (size_t i = 0; i < len; ++i) {
-    char buf[3];
-    snprintf(buf, sizeof(buf), "%02X", data[i]);
-    out += buf;
+    out += hex_chars[data[i] >> 4];
+    out += hex_chars[data[i] & 0x0F];
   }
   return out;
 }
