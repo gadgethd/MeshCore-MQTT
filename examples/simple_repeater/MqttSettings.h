@@ -170,8 +170,16 @@
   #define MQTT_STATUS_INTERVAL_SECS 60
 #endif
 
+#ifndef MQTT_NEIGHBOR_INTERVAL_SECS
+  #define MQTT_NEIGHBOR_INTERVAL_SECS 900
+#endif
+
+#ifndef MQTT_NEIGHBOR_MIN_INTERVAL_SECS
+  #define MQTT_NEIGHBOR_MIN_INTERVAL_SECS 300
+#endif
+
 #ifndef MQTT_CLIENT_VERSION
-  #define MQTT_CLIENT_VERSION "meshcore-mqtt/v1.16.0-rev2"
+  #define MQTT_CLIENT_VERSION "meshcore-mqtt/v1.16.0-rev3"
 #endif
 
 #ifndef MQTT_MODEL
@@ -204,6 +212,7 @@ struct MqttBrokerConfig {
   uint8_t retain_status;
   uint8_t enabled;
   uint8_t reserved[2];
+  uint32_t neighbor_interval_secs;
 };
 
 // Legacy struct kept for v1 migration (topic_root was 32 bytes in v1 format)
@@ -228,6 +237,11 @@ public:
   bool load();
   bool save();
   void resetToDefaults();
+
+  uint32_t bootCount() const { return _boot_count; }
+  uint32_t incrementBootCount();
+  uint32_t configCrc32() const;
+  static uint16_t configVersion();
 
   const MqttSharedConfig &shared() const { return _shared; }
   const MqttBrokerConfig &broker(int idx) const { return _brokers[idx]; }
@@ -262,8 +276,28 @@ private:
     MqttBrokerConfigV2 brokers[MQTT_MAX_BROKERS];
   };
 
-  // v3 persisted format (current — topic_root is 256 bytes)
+  // v3 persisted format (topic_root is 256 bytes; no neighbor interval)
+  struct MqttBrokerConfigV3 {
+    char uri[128];
+    char username[64];
+    char password[64];
+    char topic_root[256];
+    char iata[16];
+    uint8_t retain_status;
+    uint8_t enabled;
+    uint8_t reserved[2];
+  };
   struct PersistedMqttConfigV3 {
+    uint32_t magic;
+    uint16_t version;
+    uint8_t broker_count;
+    uint8_t reserved;
+    MqttSharedConfig shared;
+    MqttBrokerConfigV3 brokers[MQTT_MAX_BROKERS];
+  };
+
+  // v4 persisted format (current)
+  struct PersistedMqttConfigV4 {
     uint32_t magic;
     uint16_t version;
     uint8_t broker_count;
@@ -275,9 +309,10 @@ private:
   FILESYSTEM *_fs;
   MqttSharedConfig _shared;
   MqttBrokerConfig _brokers[MQTT_MAX_BROKERS];
+  uint32_t _boot_count;
 
   static constexpr uint32_t CONFIG_MAGIC = 0x4D515454; // MQTT
-  static constexpr uint16_t CONFIG_VERSION = 3;
+  static constexpr uint16_t CONFIG_VERSION = 4;
   static constexpr const char *CONFIG_PATH = "/mqtt.cfg";
 
   bool loadV1(const uint8_t *data, size_t len);
@@ -285,6 +320,7 @@ private:
 
   static void sanitizeShared(MqttSharedConfig &cfg);
   static void sanitizeBroker(MqttBrokerConfig &cfg);
+  void loadBootCount();
 
   // Key parsing: returns broker index (0-based) and sets key_out to the
   // remaining key after stripping any "N." prefix. Returns -1 for shared keys.

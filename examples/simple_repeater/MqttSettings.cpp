@@ -2,16 +2,39 @@
 
 #if defined(ESP32) && defined(WITH_MQTT_REPORTER)
 
+#include <Preferences.h>
 #include <string.h>
 #include <strings.h>
+#include <stdlib.h>
 
-MqttSettingsStore::MqttSettingsStore() : _fs(nullptr) {
+MqttSettingsStore::MqttSettingsStore() : _fs(nullptr), _boot_count(0) {
   resetToDefaults();
 }
 
 void MqttSettingsStore::begin(FILESYSTEM *fs) {
   _fs = fs;
+  loadBootCount();
   load();
+}
+
+void MqttSettingsStore::loadBootCount() {
+  Preferences prefs;
+  if (prefs.begin("mqtt", true)) {
+    _boot_count = prefs.getUInt("boot_count", 0);
+    prefs.end();
+  }
+}
+
+uint32_t MqttSettingsStore::incrementBootCount() {
+  if (_boot_count != UINT32_MAX) {
+    _boot_count++;
+  }
+  save();
+  return _boot_count;
+}
+
+uint16_t MqttSettingsStore::configVersion() {
+  return CONFIG_VERSION;
 }
 
 bool MqttSettingsStore::load() {
@@ -49,7 +72,7 @@ bool MqttSettingsStore::load() {
     return loadV2((const uint8_t *)&v2, bytes_read);
   }
 
-  if (header.version == CONFIG_VERSION) {
+  if (header.version == 3) {
     PersistedMqttConfigV3 v3;
     size_t bytes_read = file.read((uint8_t *)&v3, sizeof(v3));
     file.close();
@@ -58,7 +81,33 @@ bool MqttSettingsStore::load() {
     _shared = v3.shared;
     sanitizeShared(_shared);
     for (int i = 0; i < MQTT_MAX_BROKERS; i++) {
-      _brokers[i] = v3.brokers[i];
+      const MqttBrokerConfigV3 &src = v3.brokers[i];
+      MqttBrokerConfig &dst = _brokers[i];
+      StrHelper::strncpy(dst.uri, src.uri, sizeof(dst.uri));
+      StrHelper::strncpy(dst.username, src.username, sizeof(dst.username));
+      StrHelper::strncpy(dst.password, src.password, sizeof(dst.password));
+      StrHelper::strncpy(dst.topic_root, src.topic_root, sizeof(dst.topic_root));
+      StrHelper::strncpy(dst.iata, src.iata, sizeof(dst.iata));
+      dst.retain_status = src.retain_status;
+      dst.enabled = src.enabled;
+      dst.neighbor_interval_secs = MQTT_NEIGHBOR_INTERVAL_SECS;
+      sanitizeBroker(_brokers[i]);
+    }
+    save();
+    Serial.println("MQTT settings: migrated v3 -> v4");
+    return true;
+  }
+
+  if (header.version == CONFIG_VERSION) {
+    PersistedMqttConfigV4 v4;
+    size_t bytes_read = file.read((uint8_t *)&v4, sizeof(v4));
+    file.close();
+    if (bytes_read != sizeof(v4)) return false;
+
+    _shared = v4.shared;
+    sanitizeShared(_shared);
+    for (int i = 0; i < MQTT_MAX_BROKERS; i++) {
+      _brokers[i] = v4.brokers[i];
       sanitizeBroker(_brokers[i]);
     }
     return true;
@@ -89,9 +138,9 @@ bool MqttSettingsStore::loadV1(const uint8_t *data, size_t len) {
   _brokers[0].enabled = 1;
   sanitizeBroker(_brokers[0]);
 
-  // Save as v3 format
+  // Save as v4 format
   save();
-  Serial.println("MQTT settings: migrated v1 -> v3");
+  Serial.println("MQTT settings: migrated v1 -> v4");
   return true;
 }
 
@@ -115,33 +164,66 @@ bool MqttSettingsStore::loadV2(const uint8_t *data, size_t len) {
     sanitizeBroker(dst);
   }
 
-  // Save as v3 format
+  // Save as v4 format
   save();
-  Serial.println("MQTT settings: migrated v2 -> v3");
+  Serial.println("MQTT settings: migrated v2 -> v4");
   return true;
 }
 
 bool MqttSettingsStore::save() {
-  if (_fs == nullptr) return false;
+  bool file_saved = false;
+  if (_fs != nullptr) {
+    PersistedMqttConfigV4 v4 = {};
+    v4.magic = CONFIG_MAGIC;
+    v4.version = CONFIG_VERSION;
+    v4.broker_count = (uint8_t)brokerCount();
+    v4.reserved = 0;
+    v4.shared = _shared;
+    sanitizeShared(v4.shared);
+    for (int i = 0; i < MQTT_MAX_BROKERS; i++) {
+      v4.brokers[i] = _brokers[i];
+      sanitizeBroker(v4.brokers[i]);
+    }
 
-  PersistedMqttConfigV3 v3 = {};
-  v3.magic = CONFIG_MAGIC;
-  v3.version = CONFIG_VERSION;
-  v3.broker_count = (uint8_t)brokerCount();
-  v3.reserved = 0;
-  v3.shared = _shared;
-  sanitizeShared(v3.shared);
-  for (int i = 0; i < MQTT_MAX_BROKERS; i++) {
-    v3.brokers[i] = _brokers[i];
-    sanitizeBroker(v3.brokers[i]);
+    File file = _fs->open(CONFIG_PATH, "w");
+    if (file) {
+      size_t bytes_written = file.write((const uint8_t *)&v4, sizeof(v4));
+      file.close();
+      file_saved = bytes_written == sizeof(v4);
+    }
   }
 
-  File file = _fs->open(CONFIG_PATH, "w");
-  if (!file) return false;
+  Preferences prefs;
+  bool nvs_saved = false;
+  if (prefs.begin("mqtt", false)) {
+    nvs_saved = prefs.putUInt("boot_count", _boot_count) == sizeof(_boot_count);
+    prefs.end();
+  }
 
-  size_t bytes_written = file.write((const uint8_t *)&v3, sizeof(v3));
-  file.close();
-  return bytes_written == sizeof(v3);
+  return file_saved && nvs_saved;
+}
+
+uint32_t MqttSettingsStore::configCrc32() const {
+  PersistedMqttConfigV4 v4 = {};
+  v4.magic = CONFIG_MAGIC;
+  v4.version = CONFIG_VERSION;
+  v4.broker_count = (uint8_t)brokerCount();
+  v4.shared = _shared;
+  sanitizeShared(v4.shared);
+  for (int i = 0; i < MQTT_MAX_BROKERS; i++) {
+    v4.brokers[i] = _brokers[i];
+    sanitizeBroker(v4.brokers[i]);
+  }
+
+  const uint8_t *bytes = reinterpret_cast<const uint8_t *>(&v4);
+  uint32_t crc = 0xFFFFFFFFUL;
+  for (size_t i = 0; i < sizeof(v4); i++) {
+    crc ^= bytes[i];
+    for (uint8_t bit = 0; bit < 8; bit++) {
+      crc = (crc >> 1) ^ (0xEDB88320UL & (0UL - (crc & 1UL)));
+    }
+  }
+  return ~crc;
 }
 
 void MqttSettingsStore::resetToDefaults() {
@@ -160,6 +242,7 @@ void MqttSettingsStore::resetToDefaults() {
   StrHelper::strncpy(_brokers[0].iata, MQTT_BROKER1_IATA, sizeof(_brokers[0].iata));
   _brokers[0].retain_status = MQTT_BROKER1_RETAIN_STATUS ? 1 : 0;
   _brokers[0].enabled = MQTT_BROKER1_ENABLED ? 1 : 0;
+  _brokers[0].neighbor_interval_secs = MQTT_NEIGHBOR_INTERVAL_SECS;
 
   StrHelper::strncpy(_brokers[1].uri, MQTT_BROKER2_URI, sizeof(_brokers[1].uri));
   StrHelper::strncpy(_brokers[1].username, MQTT_BROKER2_USERNAME, sizeof(_brokers[1].username));
@@ -168,6 +251,7 @@ void MqttSettingsStore::resetToDefaults() {
   StrHelper::strncpy(_brokers[1].iata, MQTT_BROKER2_IATA, sizeof(_brokers[1].iata));
   _brokers[1].retain_status = MQTT_BROKER2_RETAIN_STATUS ? 1 : 0;
   _brokers[1].enabled = MQTT_BROKER2_ENABLED ? 1 : 0;
+  _brokers[1].neighbor_interval_secs = MQTT_NEIGHBOR_INTERVAL_SECS;
 
   StrHelper::strncpy(_brokers[2].uri, MQTT_BROKER3_URI, sizeof(_brokers[2].uri));
   StrHelper::strncpy(_brokers[2].username, MQTT_BROKER3_USERNAME, sizeof(_brokers[2].username));
@@ -176,6 +260,7 @@ void MqttSettingsStore::resetToDefaults() {
   StrHelper::strncpy(_brokers[2].iata, MQTT_BROKER3_IATA, sizeof(_brokers[2].iata));
   _brokers[2].retain_status = MQTT_BROKER3_RETAIN_STATUS ? 1 : 0;
   _brokers[2].enabled = MQTT_BROKER3_ENABLED ? 1 : 0;
+  _brokers[2].neighbor_interval_secs = MQTT_NEIGHBOR_INTERVAL_SECS;
 
   StrHelper::strncpy(_brokers[3].uri, MQTT_BROKER4_URI, sizeof(_brokers[3].uri));
   StrHelper::strncpy(_brokers[3].username, MQTT_BROKER4_USERNAME, sizeof(_brokers[3].username));
@@ -184,6 +269,7 @@ void MqttSettingsStore::resetToDefaults() {
   StrHelper::strncpy(_brokers[3].iata, MQTT_BROKER4_IATA, sizeof(_brokers[3].iata));
   _brokers[3].retain_status = MQTT_BROKER4_RETAIN_STATUS ? 1 : 0;
   _brokers[3].enabled = MQTT_BROKER4_ENABLED ? 1 : 0;
+  _brokers[3].neighbor_interval_secs = MQTT_NEIGHBOR_INTERVAL_SECS;
 
   StrHelper::strncpy(_brokers[4].uri, MQTT_BROKER5_URI, sizeof(_brokers[4].uri));
   StrHelper::strncpy(_brokers[4].username, MQTT_BROKER5_USERNAME, sizeof(_brokers[4].username));
@@ -192,6 +278,7 @@ void MqttSettingsStore::resetToDefaults() {
   StrHelper::strncpy(_brokers[4].iata, MQTT_BROKER5_IATA, sizeof(_brokers[4].iata));
   _brokers[4].retain_status = MQTT_BROKER5_RETAIN_STATUS ? 1 : 0;
   _brokers[4].enabled = MQTT_BROKER5_ENABLED ? 1 : 0;
+  _brokers[4].neighbor_interval_secs = MQTT_NEIGHBOR_INTERVAL_SECS;
 
   StrHelper::strncpy(_brokers[5].uri, MQTT_BROKER6_URI, sizeof(_brokers[5].uri));
   StrHelper::strncpy(_brokers[5].username, MQTT_BROKER6_USERNAME, sizeof(_brokers[5].username));
@@ -200,6 +287,7 @@ void MqttSettingsStore::resetToDefaults() {
   StrHelper::strncpy(_brokers[5].iata, MQTT_BROKER6_IATA, sizeof(_brokers[5].iata));
   _brokers[5].retain_status = MQTT_BROKER6_RETAIN_STATUS ? 1 : 0;
   _brokers[5].enabled = MQTT_BROKER6_ENABLED ? 1 : 0;
+  _brokers[5].neighbor_interval_secs = MQTT_NEIGHBOR_INTERVAL_SECS;
 
   for (int i = 0; i < MQTT_MAX_BROKERS; i++) {
     sanitizeBroker(_brokers[i]);
@@ -215,6 +303,10 @@ int MqttSettingsStore::brokerCount() const {
 }
 
 int MqttSettingsStore::parseKey(const char *key, const char **key_out) {
+  if (strncmp(key, "mqtt.", 5) == 0) {
+    key += 5;
+  }
+
   // Check for "N." prefix where N is 1-6
   if (key[0] >= '1' && key[0] <= '0' + MQTT_MAX_BROKERS && key[1] == '.') {
     *key_out = key + 2;
@@ -224,7 +316,8 @@ int MqttSettingsStore::parseKey(const char *key, const char **key_out) {
 
   // Shared keys return -1
   if (strcmp(key, "wifi.ssid") == 0 || strcmp(key, "wifi.pass") == 0 ||
-      strcmp(key, "model") == 0 || strcmp(key, "client.version") == 0) {
+      strcmp(key, "model") == 0 || strcmp(key, "client.version") == 0 ||
+      strcmp(key, "boot_count") == 0) {
     return -1;
   }
 
@@ -240,6 +333,7 @@ bool MqttSettingsStore::getValue(const char *key, char *dest, size_t dest_size, 
 
   const char *value = nullptr;
   char masked[8];
+  char numeric[16];
 
   // Shared keys
   if (idx == -1) {
@@ -251,6 +345,9 @@ bool MqttSettingsStore::getValue(const char *key, char *dest, size_t dest_size, 
       value = _shared.model;
     } else if (strcmp(field, "client.version") == 0) {
       value = _shared.client_version;
+    } else if (strcmp(field, "boot_count") == 0) {
+      snprintf(numeric, sizeof(numeric), "%lu", (unsigned long)_boot_count);
+      value = numeric;
     } else {
       return false;
     }
@@ -283,6 +380,9 @@ bool MqttSettingsStore::getValue(const char *key, char *dest, size_t dest_size, 
     value = b.retain_status ? "1" : "0";
   } else if (strcmp(field, "enabled") == 0) {
     value = b.enabled ? "1" : "0";
+  } else if (strcmp(field, "neighbor.interval") == 0) {
+    snprintf(numeric, sizeof(numeric), "%lu", (unsigned long)b.neighbor_interval_secs);
+    value = numeric;
   } else {
     return false;
   }
@@ -313,6 +413,11 @@ bool MqttSettingsStore::setValue(const char *key, const char *value) {
       StrHelper::strncpy(_shared.model, value, sizeof(_shared.model));
     } else if (strcmp(field, "client.version") == 0) {
       StrHelper::strncpy(_shared.client_version, value, sizeof(_shared.client_version));
+    } else if (strcmp(field, "boot_count") == 0) {
+      char *end = nullptr;
+      unsigned long parsed = strtoul(value, &end, 10);
+      if (end == value || *end != '\0') return false;
+      _boot_count = (uint32_t)parsed;
     } else {
       return false;
     }
@@ -338,6 +443,11 @@ bool MqttSettingsStore::setValue(const char *key, const char *value) {
     b.retain_status = (strcmp(value, "0") == 0 || strcasecmp(value, "off") == 0 || strcasecmp(value, "false") == 0) ? 0 : 1;
   } else if (strcmp(field, "enabled") == 0) {
     b.enabled = (strcmp(value, "0") == 0 || strcasecmp(value, "off") == 0 || strcasecmp(value, "false") == 0) ? 0 : 1;
+  } else if (strcmp(field, "neighbor.interval") == 0) {
+    char *end = nullptr;
+    unsigned long parsed = strtoul(value, &end, 10);
+    if (end == value || *end != '\0') return false;
+    b.neighbor_interval_secs = (uint32_t)parsed;
   } else {
     return false;
   }
@@ -375,6 +485,12 @@ void MqttSettingsStore::sanitizeBroker(MqttBrokerConfig &cfg) {
   }
   cfg.retain_status = cfg.retain_status ? 1 : 0;
   cfg.enabled = cfg.enabled ? 1 : 0;
+  if (cfg.neighbor_interval_secs == 0) {
+    cfg.neighbor_interval_secs = MQTT_NEIGHBOR_INTERVAL_SECS;
+  }
+  if (cfg.neighbor_interval_secs < MQTT_NEIGHBOR_MIN_INTERVAL_SECS) {
+    cfg.neighbor_interval_secs = MQTT_NEIGHBOR_MIN_INTERVAL_SECS;
+  }
 }
 
 #endif
