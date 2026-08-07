@@ -47,7 +47,7 @@ public:
   void publishRxRaw(const uint8_t raw[], int len);
   void publishRxPacket(mesh::Packet *pkt, int len, float score, int rssi, float snr, uint32_t duration_ms);
   void publishTxPacket(mesh::Packet *pkt, int len);
-  void publishTxFail(mesh::Packet *pkt, int len);
+  void publishTxFail(mesh::Packet *pkt, int len, int reason = 0);
 
   const char *getWiFiSsid() const;
   bool isWiFiConnected() const;
@@ -63,6 +63,11 @@ public:
 private:
   static constexpr uint8_t MQTT_PUBLISH_QUEUE_SIZE = MQTT_PUBLISH_QUEUE_DEPTH;
   static constexpr uint8_t MQTT_PUBLISHES_PER_LOOP = MQTT_MAX_PUBLISHES_PER_LOOP;
+  static constexpr uint8_t MQTT_RECONNECT_RING_SIZE = 32;
+  static constexpr uint8_t HEARD_NODE_CAPACITY = 128;
+  static constexpr uint8_t NEIGHBOR_CAPACITY = 32;
+  static constexpr uint32_t HEARD_NODE_WINDOW_MS = 24UL * 60UL * 60UL * 1000UL;
+  static constexpr uint32_t RECONNECT_WINDOW_MS = 60UL * 60UL * 1000UL;
   static_assert(MQTT_PUBLISH_QUEUE_DEPTH > 0 && MQTT_PUBLISH_QUEUE_DEPTH <= UINT8_MAX,
                 "MQTT_PUBLISH_QUEUE_DEPTH must be between 1 and 255");
   static_assert(MQTT_MAX_PUBLISHES_PER_LOOP > 0 && MQTT_MAX_PUBLISHES_PER_LOOP <= UINT8_MAX,
@@ -84,8 +89,10 @@ private:
     unsigned long connected_since_ms;
     char status_topic[384];
     char packets_topic[384];
+    char neighbors_topic[384];
     String offline_payload;
     unsigned long last_status_publish;
+    unsigned long last_neighbors_publish;
     PublishEntry publish_queue[MQTT_PUBLISH_QUEUE_SIZE];
     uint8_t queue_head;
     uint8_t queue_tail;
@@ -99,8 +106,28 @@ private:
     uint32_t error_events;
     uint32_t status_publish_count;
     uint32_t packet_publish_count;
+    uint32_t session_status_publish_count;
+    uint32_t session_packet_publish_count;
     uint32_t publish_failures;
     uint32_t queue_drops;
+    uint32_t reconnect_attempt_ms[MQTT_RECONNECT_RING_SIZE];
+    uint8_t reconnect_attempt_head;
+    uint8_t reconnect_attempt_count;
+    uint32_t last_offline_epoch;
+  };
+
+  struct HeardNodeEntry {
+    uint8_t id[PUB_KEY_SIZE];
+    uint32_t last_heard_ms;
+    bool used;
+  };
+
+  struct NeighborEntry {
+    uint8_t id[PUB_KEY_SIZE];
+    int rssi;
+    float snr;
+    uint32_t last_heard_ms;
+    bool used;
   };
 
   struct EventContext {
@@ -122,8 +149,17 @@ private:
   unsigned long _ntp_sync_started_at;
   bool _ntp_sync_pending;
   bool _time_synced;
+  unsigned long _ntp_synced_at_ms;
   char _origin_id[65];
   char _client_id[40];
+  char _reset_reason[20];
+  uint32_t _boot_count;
+  uint32_t _config_crc32;
+  uint32_t _max_loop_ms;
+  uint32_t _max_loop_at_ms;
+  int _last_rx_rssi;
+  float _last_rx_snr;
+  int _last_tx_fail_reason;
   uint32_t _rx_publish_calls;
   uint32_t _tx_publish_calls;
   uint32_t _tx_fail_publish_calls;
@@ -141,6 +177,8 @@ private:
   float _idle_pct_core1;
   uint32_t _last_idle_tick_count[2];
   uint32_t _last_total_runtime;
+  HeardNodeEntry _heard_nodes[HEARD_NODE_CAPACITY];
+  NeighborEntry _neighbors[NEIGHBOR_CAPACITY];
 
   void ensureIdentityStrings();
   void resetBrokerConnection(int idx);
@@ -156,6 +194,14 @@ private:
   bool anyBrokerConnected() const;
   void handleMqttEvent(int broker_idx, esp_mqtt_event_handle_t event);
   bool brokerNeedsTimeSync(int idx) const;
+  void finishLoop(int64_t started_us);
+  void recordReconnectAttempt(BrokerClient &bc, uint32_t now_ms);
+  uint32_t reconnectAttemptsLastHour(const BrokerClient &bc, uint32_t now_ms) const;
+  void upsertHeardNode(const uint8_t id[PUB_KEY_SIZE], uint32_t now_ms);
+  void upsertNeighbor(const uint8_t id[PUB_KEY_SIZE], int rssi, float snr, uint32_t now_ms);
+  uint32_t heardNodesLast24Hours(uint32_t now_ms) const;
+  String buildNeighborsPayload(uint32_t now_ms) const;
+  void maybePublishNeighbors(uint32_t now_ms);
 
   String buildIsoTimestamp() const;
   String buildTimeField() const;

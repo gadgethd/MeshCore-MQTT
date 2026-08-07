@@ -92,6 +92,53 @@ void MyMesh::putNeighbour(const mesh::Identity &id, uint32_t timestamp, float sn
 #endif
 }
 
+bool MyMesh::resolvePacketSourceId(const mesh::Packet *packet, uint8_t out_id[PUB_KEY_SIZE]) {
+  if (packet == nullptr || out_id == nullptr) return false;
+
+  const uint8_t type = packet->getPayloadType();
+  if (type == PAYLOAD_TYPE_ADVERT && packet->payload_len >= PUB_KEY_SIZE) {
+    memcpy(out_id, packet->payload, PUB_KEY_SIZE);
+    return true;
+  }
+
+  if (type == PAYLOAD_TYPE_ANON_REQ && packet->payload_len >= 1 + PUB_KEY_SIZE) {
+    memcpy(out_id, &packet->payload[1], PUB_KEY_SIZE);
+    return true;
+  }
+
+  // Repeater discovery responses also carry the complete sender identity.
+  if (type == PAYLOAD_TYPE_CONTROL && packet->payload_len >= 6 + PUB_KEY_SIZE &&
+      (packet->payload[0] & 0xF0) == 0x90) {
+    memcpy(out_id, &packet->payload[6], PUB_KEY_SIZE);
+    return true;
+  }
+
+  // Encrypted direct packets carry a one-byte source hash. Resolve that hash
+  // against the same known identities used by the repeater's mesh handlers.
+  if ((type == PAYLOAD_TYPE_REQ || type == PAYLOAD_TYPE_RESPONSE ||
+       type == PAYLOAD_TYPE_TXT_MSG || type == PAYLOAD_TYPE_PATH) &&
+      packet->payload_len >= 2) {
+    const uint8_t *source_hash = &packet->payload[1];
+#if MAX_NEIGHBOURS
+    for (int i = 0; i < MAX_NEIGHBOURS; i++) {
+      if (neighbours[i].heard_timestamp > 0 && neighbours[i].id.isHashMatch(source_hash)) {
+        memcpy(out_id, neighbours[i].id.pub_key, PUB_KEY_SIZE);
+        return true;
+      }
+    }
+#endif
+    for (int i = 0; i < acl.getNumClients(); i++) {
+      ClientInfo *client = acl.getClientByIdx(i);
+      if (client != nullptr && client->id.isHashMatch(source_hash)) {
+        memcpy(out_id, client->id.pub_key, PUB_KEY_SIZE);
+        return true;
+      }
+    }
+  }
+
+  return false;
+}
+
 uint8_t MyMesh::handleLoginReq(const mesh::Identity& sender, const uint8_t* secret, uint32_t sender_timestamp, const uint8_t* data, bool is_flood) {
   ClientInfo* client = NULL;
   if (data[0] == 0) {   // blank password, just check if sender is in ACL
@@ -543,7 +590,9 @@ void MyMesh::logTx(mesh::Packet *pkt, int len) {
 void MyMesh::logTxFail(mesh::Packet *pkt, int len) {
   tx_fail_count++;
 #if defined(ESP32) && defined(WITH_MQTT_REPORTER)
-  mqtt_reporter.publishTxFail(pkt, len);
+  // The dispatcher exposes its current error flags at this hook; retain the
+  // snapshot with the failed packet for the MQTT status telemetry.
+  mqtt_reporter.publishTxFail(pkt, len, (int)_err_flags);
 #endif
 
   if (_logging) {
@@ -1473,6 +1522,7 @@ String MyMesh::buildMqttStatusStatsJson() const {
   stats += ",\"rx_air_secs\":" + String(rx_air_secs);
   stats += ",\"channel_utilization\":" + String(channel_utilization, 1);
   stats += ",\"air_util_tx\":" + String(air_util_tx, 1);
+  stats += ",\"air_util_rx\":" + String(uptime_secs > 0 ? (100.0f * (float)rx_air_secs) / (float)uptime_secs : 0.0f, 1);
   stats += "}";
   return stats;
 }

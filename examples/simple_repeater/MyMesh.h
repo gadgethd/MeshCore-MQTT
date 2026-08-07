@@ -73,7 +73,7 @@ struct NeighbourInfo {
 #endif
 
 #ifndef FIRMWARE_VERSION
-  #define FIRMWARE_VERSION   "v1.16.0-rev2"
+  #define FIRMWARE_VERSION   "v1.16.0-rev3"
 #endif
 
 #define FIRMWARE_ROLE "repeater"
@@ -195,6 +195,8 @@ public:
   uint32_t getForwardFailureCount() const { return tx_fail_count; }
   uint32_t getTxQueueDepth() const { return _mgr->getOutboundCount(0xFFFFFFFF); }
   uint32_t getTxQueuePeakDepth() const { return tx_queue_peak_len; }
+  int8_t getTxPowerDbm() const { return _prefs.tx_power_dbm; }
+  bool resolvePacketSourceId(const mesh::Packet *packet, uint8_t out_id[PUB_KEY_SIZE]);
   NodePrefs* getNodePrefs() {
     return &_prefs;
   }
