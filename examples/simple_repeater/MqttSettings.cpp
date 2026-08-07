@@ -3,12 +3,25 @@
 #if defined(ESP32) && defined(WITH_MQTT_REPORTER)
 
 #include <Preferences.h>
+#include <nvs_flash.h>
 #include <string.h>
 #include <strings.h>
 #include <stdlib.h>
 
 MqttSettingsStore::MqttSettingsStore() : _fs(nullptr), _boot_count(0) {
   resetToDefaults();
+}
+
+// A fully erased (or corrupted) NVS partition must be initialized before the
+// first nvs_open. The Arduino core's initArduino only warns on failure, so a
+// blank partition panics at the first Preferences::begin(). This mirrors the
+// standard ESP-IDF recovery pattern.
+static void ensureNvsReady() {
+  esp_err_t err = nvs_flash_init();
+  if (err == ESP_ERR_NVS_NO_FREE_PAGES || err == ESP_ERR_NVS_NEW_VERSION_FOUND) {
+    nvs_flash_erase();
+    nvs_flash_init();
+  }
 }
 
 void MqttSettingsStore::begin(FILESYSTEM *fs) {
@@ -18,6 +31,7 @@ void MqttSettingsStore::begin(FILESYSTEM *fs) {
 }
 
 void MqttSettingsStore::loadBootCount() {
+  ensureNvsReady();
   Preferences prefs;
   if (prefs.begin("mqtt", true)) {
     _boot_count = prefs.getUInt("boot_count", 0);
@@ -193,6 +207,7 @@ bool MqttSettingsStore::save() {
     }
   }
 
+  ensureNvsReady();
   Preferences prefs;
   bool nvs_saved = false;
   if (prefs.begin("mqtt", false)) {
