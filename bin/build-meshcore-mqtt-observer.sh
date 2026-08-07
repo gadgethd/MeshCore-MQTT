@@ -348,6 +348,7 @@ build_flags =
   \${env:${base_env}.build_flags}
   -D WITH_MQTT_REPORTER=1
   -D AUTO_OFF_MILLIS=20000
+  -D MESHCORE_GIT_COMMIT=\"${GIT_COMMIT}\"
 EOF
 }
 
@@ -461,13 +462,15 @@ if [ "${MESHCORE_MQTT_BRANCH}" = "dev" ] && [ "${BRANCH_SELECTED_BY_PARENT}" != 
   fi
 fi
 
+GIT_COMMIT=$(git rev-parse --short=12 HEAD 2>/dev/null || printf '%s' "unknown")
+
 prompt_value MESHCORE_MQTT_ADVERT_NAME "Observer name" "MeshCore MQTT"
 prompt_value MESHCORE_MQTT_ADMIN_PASSWORD "Admin password" "password"
 prompt_value MESHCORE_MQTT_BASE_ENV "Base ESP repeater env" "${MESHCORE_MQTT_BASE_ENV:-$BASE_ENV_DEFAULT}" 0 1
 prompt_value MESHCORE_MQTT_WIFI_SSID "WiFi SSID default" "${MESHCORE_MQTT_WIFI_SSID:-}"
 prompt_value MESHCORE_MQTT_WIFI_PWD "WiFi password default" "${MESHCORE_MQTT_WIFI_PWD:-}" 1
 prompt_value MESHCORE_MQTT_MODEL "Model label" "${MESHCORE_MQTT_MODEL:-$MESHCORE_MQTT_BASE_ENV}"
-prompt_value MESHCORE_MQTT_CLIENT_VERSION "Client version" "meshcore-mqtt/v1.16.0-rev2"
+prompt_value MESHCORE_MQTT_CLIENT_VERSION "Client version" "meshcore-mqtt/v1.16.0-rev3"
 
 prompt_value MESHCORE_MQTT_BROKER1_URI "MQTT broker 1 URI default" "${MESHCORE_MQTT_BROKER1_URI:-${MESHCORE_MQTT_URI:-}}"
 prompt_value MESHCORE_MQTT_BROKER1_USERNAME "MQTT broker 1 username default" "${MESHCORE_MQTT_BROKER1_USERNAME:-${MESHCORE_MQTT_USERNAME:-}}"

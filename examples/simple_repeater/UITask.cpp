@@ -37,7 +37,7 @@ void UITask::begin(NodePrefs* node_prefs, const char* build_date, const char* fi
   _node_prefs = node_prefs;
   _display->turnOn();
 
-  // Keep release suffixes such as "-rev2" visible on the boot screen.
+  // Keep release suffixes such as "-rev3" visible on the boot screen.
   snprintf(_version_info, sizeof(_version_info), "%s (%s)", firmware_version, build_date);
 }
 

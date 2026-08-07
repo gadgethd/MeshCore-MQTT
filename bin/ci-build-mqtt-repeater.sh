@@ -26,6 +26,8 @@ if [ -z "${PLATFORMIO_CORE_DIR:-}" ]; then
   export PLATFORMIO_CORE_DIR=/tmp/pio-core
 fi
 
+GIT_COMMIT=$(git -C "${REPO_ROOT}" rev-parse --short=12 HEAD 2>/dev/null || printf '%s' "unknown")
+
 discover_esp_repeater_envs() {
   python3 - "${REPO_ROOT}" <<'PY'
 import re
@@ -81,6 +83,7 @@ build_flags =
   -D WITH_MQTT_REPORTER=1
   -D AUTO_OFF_MILLIS=20000
   -D DISABLE_WIFI_OTA=1
+  -D MESHCORE_GIT_COMMIT=\"${GIT_COMMIT}\"
 EOF
 
   echo "  Building ${base_env} (env: ${build_env})..."
