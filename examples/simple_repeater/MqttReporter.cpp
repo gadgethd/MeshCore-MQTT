@@ -595,8 +595,12 @@ bool MqttReporter::connectMQTT(int idx) {
   mqtt_config.password = broker.password;
   mqtt_config.keepalive = 60;
   mqtt_config.disable_auto_reconnect = false;
-  mqtt_config.buffer_size = 2048;
-  mqtt_config.out_buffer_size = 2048;
+  // rev3 status payloads (full telemetry + nested mqtt block) are ~1.9 KB and
+  // are also used as the LWT, so the CONNECT packet alone can exceed the
+  // default 2048-byte buffers. Without this headroom esp-mqtt fails every
+  // connect with "Connect message cannot be created".
+  mqtt_config.buffer_size = 4096;
+  mqtt_config.out_buffer_size = 4096;
   mqtt_config.lwt_topic = bc.status_topic;
   mqtt_config.lwt_msg = bc.offline_payload.c_str();
   mqtt_config.lwt_qos = 0;
