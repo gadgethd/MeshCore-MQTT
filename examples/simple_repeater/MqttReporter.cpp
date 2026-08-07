@@ -82,6 +82,7 @@ MqttReporter::MqttReporter(MyMesh &mesh, mesh::RTCClock &clock)
   _min_free_heap = UINT32_MAX;
   _last_wifi_disconnect_reason = -1;
   _wifi_got_ip = false;
+  _wifi_connected_since_ms = 0;
   _wifi_last_ip = "";
   _last_cpu_sample_ms = 0;
   _idle_pct_core0 = -1.0f;
@@ -93,6 +94,7 @@ MqttReporter::MqttReporter(MyMesh &mesh, mesh::RTCClock &clock)
   for (int i = 0; i < MQTT_MAX_BROKERS; i++) {
     _clients[i].client = nullptr;
     _clients[i].started = false;
+    _clients[i].connected_since_ms = 0;
     _clients[i].connected = false;
     _clients[i].status_topic[0] = '\0';
     _clients[i].packets_topic[0] = '\0';
@@ -154,10 +156,12 @@ void MqttReporter::begin(FILESYSTEM *fs) {
     if (event == ARDUINO_EVENT_WIFI_STA_DISCONNECTED) {
       self->_last_wifi_disconnect_reason = info.wifi_sta_disconnected.reason;
       self->_wifi_got_ip = false;
+      self->_wifi_connected_since_ms = 0;
       Serial.printf("MQTT reporter: WiFi disconnected, reason=%d\n",
                     self->_last_wifi_disconnect_reason);
     } else if (event == ARDUINO_EVENT_WIFI_STA_GOT_IP) {
       self->_wifi_got_ip = true;
+      self->_wifi_connected_since_ms = millis();
       self->_wifi_last_ip = WiFi.localIP().toString();
       Serial.printf("MQTT reporter: WiFi got IP: %s\n", self->_wifi_last_ip.c_str());
     }
@@ -614,6 +618,7 @@ void MqttReporter::handleMqttEvent(int broker_idx, esp_mqtt_event_handle_t event
     case MQTT_EVENT_CONNECTED:
       bc.started = true;
       bc.connected = true;
+      bc.connected_since_ms = millis();
       bc.online_status_pending = true;
       bc.connect_events++;
       Serial.printf("MQTT reporter: broker %d connected\n", broker_idx + 1);
@@ -621,6 +626,7 @@ void MqttReporter::handleMqttEvent(int broker_idx, esp_mqtt_event_handle_t event
     case MQTT_EVENT_DISCONNECTED:
       Serial.printf("MQTT reporter: broker %d disconnected\n", broker_idx + 1);
       bc.connected = false;
+      bc.connected_since_ms = 0;
       bc.started = false;
       bc.online_status_pending = false;
       bc.disconnect_events++;
@@ -629,6 +635,7 @@ void MqttReporter::handleMqttEvent(int broker_idx, esp_mqtt_event_handle_t event
       Serial.printf("MQTT reporter: broker %d error type=%d\n", broker_idx + 1,
                      event->error_handle ? event->error_handle->error_type : -1);
       bc.connected = false;
+      bc.connected_since_ms = 0;
       bc.started = false;
       bc.online_status_pending = false;
       bc.error_events++;
@@ -723,6 +730,7 @@ String MqttReporter::buildStatusStatsPayload(int broker_idx) const {
   stats += ",\"heap_min_free\":" + String(ESP.getMinFreeHeap());
   stats += ",\"heap_min_seen_since_boot\":" + String(_min_free_heap);
   stats += ",\"wifi_connected\":" + String(isWiFiConnected() ? "true" : "false");
+  stats += ",\"wifi_uptime_ms\":" + String(_wifi_connected_since_ms != 0 ? (millis() - _wifi_connected_since_ms) : 0);
   appendCpuIdleStats(stats);
 
   if (broker_idx >= 0 && broker_idx < MQTT_MAX_BROKERS) {
@@ -740,6 +748,7 @@ String MqttReporter::buildStatusStatsPayload(int broker_idx) const {
     stats += ",\"publish_queue_depth\":" + String(bc.queue_count);
     stats += ",\"publish_queue_drops\":" + String(bc.queue_drops);
     stats += ",\"connected\":" + String(bc.connected ? "true" : "false");
+    stats += ",\"uptime_ms\":" + String(bc.connected_since_ms != 0 ? (millis() - bc.connected_since_ms) : 0);
     stats += "}";
   }
 

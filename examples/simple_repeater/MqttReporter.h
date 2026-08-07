@@ -81,6 +81,7 @@ private:
     esp_mqtt_client_handle_t client;
     volatile bool started;
     volatile bool connected;
+    unsigned long connected_since_ms;
     char status_topic[384];
     char packets_topic[384];
     String offline_payload;
@@ -133,6 +134,7 @@ private:
   uint32_t _min_free_heap;
   int _last_wifi_disconnect_reason;
   bool _wifi_got_ip;
+  unsigned long _wifi_connected_since_ms;
   String _wifi_last_ip;
   unsigned long _last_cpu_sample_ms;
   float _idle_pct_core0;
