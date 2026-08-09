@@ -26,3 +26,6 @@ platformio.local.ini
 /claude*.md
 /codex*.md
 /chatgpt*.md
+/webflasher/
+/.build-test/
+*.bin

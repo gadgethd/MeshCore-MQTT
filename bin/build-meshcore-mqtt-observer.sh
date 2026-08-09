@@ -528,7 +528,7 @@ prompt_value MESHCORE_MQTT_BASE_ENV "Base ESP repeater env" "${MESHCORE_MQTT_BAS
 prompt_value MESHCORE_MQTT_WIFI_SSID "WiFi SSID default" "${MESHCORE_MQTT_WIFI_SSID:-}"
 prompt_value MESHCORE_MQTT_WIFI_PWD "WiFi password default" "${MESHCORE_MQTT_WIFI_PWD:-}" 1
 prompt_value MESHCORE_MQTT_MODEL "Model label" "${MESHCORE_MQTT_MODEL:-$MESHCORE_MQTT_BASE_ENV}"
-prompt_value MESHCORE_MQTT_CLIENT_VERSION "Client version" "meshcore-mqtt/v1.16.0-rev3"
+prompt_value MESHCORE_MQTT_CLIENT_VERSION "Client version" "meshcore-mqtt/v1.17.0"
 
 prompt_value MESHCORE_MQTT_BROKER1_URI "MQTT broker 1 URI default" "${MESHCORE_MQTT_BROKER1_URI:-${MESHCORE_MQTT_URI:-}}"
 prompt_value MESHCORE_MQTT_BROKER1_USERNAME "MQTT broker 1 username default" "${MESHCORE_MQTT_BROKER1_USERNAME:-${MESHCORE_MQTT_USERNAME:-}}"
