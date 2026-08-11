@@ -7,6 +7,8 @@
 #include <RTClib.h>
 #include <WiFi.h>
 #include <atomic>
+#include <freertos/FreeRTOS.h>
+#include <freertos/queue.h>
 #include <mqtt_client.h>
 #include "MqttSettings.h"
 
@@ -36,6 +38,10 @@ class MyMesh;
   #define MQTT_MAX_PUBLISHES_PER_LOOP 2
 #endif
 
+#ifndef MQTT_CALLBACK_QUEUE_DEPTH
+  #define MQTT_CALLBACK_QUEUE_DEPTH 32
+#endif
+
 class MqttReporter {
 public:
   MqttReporter(MyMesh &mesh, mesh::RTCClock &clock);
@@ -53,7 +59,7 @@ public:
   bool isWiFiConnected() const;
   bool isMqttConnected() const;
   bool isMqttConnected(int broker_idx) const;
-  bool getConfigValue(const char *key, char *dest, size_t dest_size, bool mask_secret = false) const;
+  bool getConfigValue(const char *key, char *dest, size_t dest_size, bool mask_secret = true) const;
   bool setConfigValue(const char *key, const char *value);
   bool resetConfig();
   void reconnect(int broker_idx = -1);
@@ -86,6 +92,7 @@ private:
     esp_mqtt_client_handle_t client;
     volatile bool started;
     volatile bool connected;
+    uint32_t next_connect_attempt_ms;
     unsigned long connected_since_ms;
     char status_topic[384];
     char packets_topic[384];
@@ -135,11 +142,28 @@ private:
     int broker_idx;
   };
 
+  enum class CallbackEventType : uint8_t {
+    WifiDisconnected,
+    WifiGotIp,
+    MqttConnected,
+    MqttDisconnected,
+    MqttError
+  };
+
+  struct CallbackEvent {
+    CallbackEventType type;
+    int8_t broker_idx;
+    int wifi_reason;
+    int error_type;
+    esp_mqtt_client_handle_t client;
+  };
+
   MyMesh *_mesh;
   mesh::RTCClock *_clock;
   MqttSettingsStore _settings;
   BrokerClient _clients[MQTT_MAX_BROKERS];
   EventContext _event_ctx[MQTT_MAX_BROKERS];
+  QueueHandle_t _callback_queue;
   String _last_rx_raw;
   unsigned long _last_wifi_attempt;
   bool _wifi_attempted;
@@ -172,6 +196,7 @@ private:
   bool _wifi_got_ip;
   unsigned long _wifi_connected_since_ms;
   String _wifi_last_ip;
+  bool _identity_strings_dirty;
   unsigned long _last_cpu_sample_ms;
   float _idle_pct_core0;
   float _idle_pct_core1;
@@ -192,7 +217,9 @@ private:
   void drainPublishQueue(int idx, uint8_t max_publishes = MQTT_PUBLISHES_PER_LOOP);
   void clearPublishQueue(int idx);
   bool anyBrokerConnected() const;
-  void handleMqttEvent(int broker_idx, esp_mqtt_event_handle_t event);
+  void enqueueCallbackEvent(const CallbackEvent &event);
+  void processCallbackEvents();
+  void handleMqttEvent(const CallbackEvent &event);
   bool brokerNeedsTimeSync(int idx) const;
   void finishLoop(int64_t started_us);
   void recordReconnectAttempt(BrokerClient &bc, uint32_t now_ms);

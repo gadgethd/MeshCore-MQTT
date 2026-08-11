@@ -32,6 +32,25 @@ static char command[160];
 static char ethernet_command[160];
 #endif
 
+static bool isSecretCommandInput(const char *line) {
+  if (line == nullptr) return false;
+  if (strncmp(line, "password ", 9) == 0 ||
+      strncmp(line, "guest.password ", 15) == 0 ||
+      strncmp(line, "set guest.password ", 19) == 0 ||
+      strncmp(line, "set bridge.secret ", 18) == 0) {
+    return true;
+  }
+  if (strncmp(line, "set mqtt.", 9) != 0) return false;
+
+  const char *key = line + 9;
+  const char *value = strchr(key, ' ');
+  if (value == nullptr) return false;
+  size_t key_len = (size_t)(value - key);
+  if (key_len == 9 && strncmp(key, "wifi.pass", key_len) == 0) return true;
+  if (key_len == 8 && strncmp(key, "password", key_len) == 0) return true;
+  return key_len >= 9 && strncmp(value - 9, ".password", 9) == 0;
+}
+
 // For power saving
 unsigned long POWERSAVING_FIRSTSLEEP_SECS = 120; // The first sleep (if enabled) from boot
 
@@ -153,7 +172,7 @@ void loop() {
     if (c != '\n') {
       command[len++] = c;
       command[len] = 0;
-      Serial.print(c);
+      if (!isSecretCommandInput(command)) Serial.print(c);
     }
     if (c == '\r') break;
   }
@@ -168,10 +187,10 @@ void loop() {
     reply[0] = 0;
 #ifdef ETHERNET_ENABLED
     if (!ethernet_handle_command(command, reply)) {
-      the_mesh.handleCommand(0, command, reply);
+      the_mesh.handleCommand(0, command, reply, sizeof(reply));
     }
 #else
-    the_mesh.handleCommand(0, command, reply);  // NOTE: there is no sender_timestamp via serial!
+    the_mesh.handleCommand(0, command, reply, sizeof(reply));  // NOTE: there is no sender_timestamp via serial!
 #endif
     if (reply[0]) {
       Serial.print("  -> "); Serial.println(reply);
@@ -186,7 +205,7 @@ void loop() {
     char reply[160];
     reply[0] = 0;
     if (!ethernet_handle_command(ethernet_command, reply)) {
-      the_mesh.handleCommand(0, ethernet_command, reply);
+      the_mesh.handleCommand(0, ethernet_command, reply, sizeof(reply));
     }
     ethernet_send_reply(reply);
     ethernet_command[0] = 0;

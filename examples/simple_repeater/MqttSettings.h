@@ -246,6 +246,7 @@ public:
   const MqttSharedConfig &shared() const { return _shared; }
   const MqttBrokerConfig &broker(int idx) const { return _brokers[idx]; }
   int brokerCount() const;
+  bool brokerCredentialsAllowed(int idx) const;
 
 private:
   // v1 persisted format (for migration)
@@ -314,9 +315,14 @@ private:
   static constexpr uint32_t CONFIG_MAGIC = 0x4D515454; // MQTT
   static constexpr uint16_t CONFIG_VERSION = 4;
   static constexpr const char *CONFIG_PATH = "/mqtt.cfg";
+  static constexpr const char *CONFIG_TEMP_PATH = "/mqtt.cfg.tmp";
+  static constexpr const char *CONFIG_BACKUP_PATH = "/mqtt.cfg.bak";
 
+  bool loadPath(const char *path);
   bool loadV1(const uint8_t *data, size_t len);
   bool loadV2(const uint8_t *data, size_t len);
+  bool saveConfigFile();
+  bool saveBootCount();
 
   static void sanitizeShared(MqttSharedConfig &cfg);
   static void sanitizeBroker(MqttBrokerConfig &cfg);
@@ -327,7 +333,7 @@ private:
   static int parseKey(const char *key, const char **key_out);
 
 public:
-  bool getValue(const char *key, char *dest, size_t dest_size, bool mask_secret = false) const;
+  bool getValue(const char *key, char *dest, size_t dest_size, bool mask_secret = true) const;
   bool setValue(const char *key, const char *value);
 };
 

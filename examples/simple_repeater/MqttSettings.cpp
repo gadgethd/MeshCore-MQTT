@@ -43,7 +43,7 @@ uint32_t MqttSettingsStore::incrementBootCount() {
   if (_boot_count != UINT32_MAX) {
     _boot_count++;
   }
-  save();
+  saveBootCount();
   return _boot_count;
 }
 
@@ -55,7 +55,21 @@ bool MqttSettingsStore::load() {
   resetToDefaults();
   if (_fs == nullptr) return false;
 
-  File file = _fs->open(CONFIG_PATH, "r");
+  if (loadPath(CONFIG_PATH)) return true;
+
+  if (_fs->exists(CONFIG_BACKUP_PATH)) {
+    resetToDefaults();
+    if (loadPath(CONFIG_BACKUP_PATH)) return true;
+  }
+
+  resetToDefaults();
+  return false;
+}
+
+bool MqttSettingsStore::loadPath(const char *path) {
+  if (_fs == nullptr || path == nullptr) return false;
+
+  File file = _fs->open(path, "r");
   if (!file) return false;
 
   // Read header first to determine version
@@ -67,7 +81,7 @@ bool MqttSettingsStore::load() {
   if (header.magic != CONFIG_MAGIC) return false;
 
   // Re-read full file
-  file = _fs->open(CONFIG_PATH, "r");
+  file = _fs->open(path, "r");
   if (!file) return false;
 
   if (header.version == 1) {
@@ -185,37 +199,77 @@ bool MqttSettingsStore::loadV2(const uint8_t *data, size_t len) {
 }
 
 bool MqttSettingsStore::save() {
-  bool file_saved = false;
-  if (_fs != nullptr) {
-    PersistedMqttConfigV4 v4 = {};
-    v4.magic = CONFIG_MAGIC;
-    v4.version = CONFIG_VERSION;
-    v4.broker_count = (uint8_t)brokerCount();
-    v4.reserved = 0;
-    v4.shared = _shared;
-    sanitizeShared(v4.shared);
-    for (int i = 0; i < MQTT_MAX_BROKERS; i++) {
-      v4.brokers[i] = _brokers[i];
-      sanitizeBroker(v4.brokers[i]);
-    }
+  return saveConfigFile();
+}
 
-    File file = _fs->open(CONFIG_PATH, "w");
-    if (file) {
-      size_t bytes_written = file.write((const uint8_t *)&v4, sizeof(v4));
-      file.close();
-      file_saved = bytes_written == sizeof(v4);
-    }
-  }
-
+bool MqttSettingsStore::saveBootCount() {
   ensureNvsReady();
   Preferences prefs;
-  bool nvs_saved = false;
-  if (prefs.begin("mqtt", false)) {
-    nvs_saved = prefs.putUInt("boot_count", _boot_count) == sizeof(_boot_count);
-    prefs.end();
+  if (!prefs.begin("mqtt", false)) return false;
+  bool saved = prefs.putUInt("boot_count", _boot_count) == sizeof(_boot_count);
+  prefs.end();
+  return saved;
+}
+
+bool MqttSettingsStore::saveConfigFile() {
+  if (_fs == nullptr) return false;
+
+  PersistedMqttConfigV4 v4 = {};
+  v4.magic = CONFIG_MAGIC;
+  v4.version = CONFIG_VERSION;
+  v4.broker_count = (uint8_t)brokerCount();
+  v4.reserved = 0;
+  v4.shared = _shared;
+  sanitizeShared(v4.shared);
+  for (int i = 0; i < MQTT_MAX_BROKERS; i++) {
+    v4.brokers[i] = _brokers[i];
+    sanitizeBroker(v4.brokers[i]);
   }
 
-  return file_saved && nvs_saved;
+  _fs->remove(CONFIG_TEMP_PATH);
+  File file = _fs->open(CONFIG_TEMP_PATH, "w");
+  if (!file) return false;
+  size_t bytes_written = file.write((const uint8_t *)&v4, sizeof(v4));
+  file.close();
+  if (bytes_written != sizeof(v4)) {
+    _fs->remove(CONFIG_TEMP_PATH);
+    return false;
+  }
+
+  // Read the temporary file back before it can replace the last-known-good file.
+  PersistedMqttConfigV4 verified = {};
+  file = _fs->open(CONFIG_TEMP_PATH, "r");
+  if (!file) {
+    _fs->remove(CONFIG_TEMP_PATH);
+    return false;
+  }
+  size_t bytes_read = file.read((uint8_t *)&verified, sizeof(verified));
+  file.close();
+  if (bytes_read != sizeof(verified) || verified.magic != CONFIG_MAGIC ||
+      verified.version != CONFIG_VERSION) {
+    _fs->remove(CONFIG_TEMP_PATH);
+    return false;
+  }
+
+  const bool had_existing = _fs->exists(CONFIG_PATH);
+  if (had_existing) {
+    _fs->remove(CONFIG_BACKUP_PATH);
+    if (!_fs->rename(CONFIG_PATH, CONFIG_BACKUP_PATH)) {
+      _fs->remove(CONFIG_TEMP_PATH);
+      return false;
+    }
+  }
+
+  if (!_fs->rename(CONFIG_TEMP_PATH, CONFIG_PATH)) {
+    if (had_existing) {
+      _fs->remove(CONFIG_PATH);
+      _fs->rename(CONFIG_BACKUP_PATH, CONFIG_PATH);
+    }
+    _fs->remove(CONFIG_TEMP_PATH);
+    return false;
+  }
+
+  return true;
 }
 
 uint32_t MqttSettingsStore::configCrc32() const {
@@ -315,6 +369,13 @@ int MqttSettingsStore::brokerCount() const {
     if (_brokers[i].enabled) count++;
   }
   return count;
+}
+
+bool MqttSettingsStore::brokerCredentialsAllowed(int idx) const {
+  if (idx < 0 || idx >= MQTT_MAX_BROKERS) return false;
+  const MqttBrokerConfig &cfg = _brokers[idx];
+  if (cfg.username[0] == '\0' && cfg.password[0] == '\0') return true;
+  return strncmp(cfg.uri, "mqtt://", 7) != 0 && strncmp(cfg.uri, "ws://", 5) != 0;
 }
 
 int MqttSettingsStore::parseKey(const char *key, const char **key_out) {
@@ -443,6 +504,7 @@ bool MqttSettingsStore::setValue(const char *key, const char *value) {
   // Per-broker keys
   if (idx < 0 || idx >= MQTT_MAX_BROKERS) return false;
   MqttBrokerConfig &b = _brokers[idx];
+  MqttBrokerConfig previous = b;
 
   if (strcmp(field, "uri") == 0) {
     StrHelper::strncpy(b.uri, value, sizeof(b.uri));
@@ -468,6 +530,10 @@ bool MqttSettingsStore::setValue(const char *key, const char *value) {
   }
 
   sanitizeBroker(b);
+  if (!brokerCredentialsAllowed(idx)) {
+    b = previous;
+    return false;
+  }
   return true;
 }
 

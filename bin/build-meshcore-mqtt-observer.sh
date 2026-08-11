@@ -25,7 +25,7 @@ WEBFLASHER_BOOT_APP0_BIN=""
 WEBFLASHER_SITE_ROOT="${WEBFLASHER_SITE_ROOT:-${HOME}/MeshCore-MQTT-WebFlasher}"
 WEBFLASHER_SITE_FIRMWARE_DIR="${WEBFLASHER_SITE_ROOT}/firmware"
 WEBFLASHER_SITE_COMPOSE="${WEBFLASHER_SITE_ROOT}/compose.yml"
-WEBFLASHER_AUTO_DEPLOY="${WEBFLASHER_AUTO_DEPLOY:-1}"
+WEBFLASHER_AUTO_DEPLOY="${WEBFLASHER_AUTO_DEPLOY:-0}"
 FLASH_SEGMENTS_JSON=""
 
 if [ -x "${LOCAL_PIO_VENV}/bin/pio" ]; then
@@ -82,6 +82,27 @@ sanitize_name() {
   printf '%s' "$1" | tr -c '[:alnum:]._+-' '-'
 }
 
+redact_uri() {
+  local uri="${1:-}"
+  if [[ "${uri}" == *"://"* ]]; then
+    local scheme="${uri%%://*}://"
+    local authority="${uri#*://}"
+    if [[ "${authority}" == *"@"* ]]; then
+      printf '%s***@%s' "${scheme}" "${authority#*@}"
+      return
+    fi
+  fi
+  printf '%s' "${uri}"
+}
+
+secret_state() {
+  if [ -n "${1:-}" ]; then
+    printf '<set>'
+  else
+    printf '<unset>'
+  fi
+}
+
 extract_flash_segments() {
   python3 -c '
 import json
@@ -104,8 +125,8 @@ print(json.dumps(segments))
 }
 
 generate_main_firmware_data() {
-  local main_dir="${REPO_ROOT}/webflasher"
-  local assets_dir="${main_dir}/assets"
+  local main_dir="${REPO_ROOT}/webflasher/main"
+  local assets_dir="${REPO_ROOT}/webflasher/assets"
   local output_file="${assets_dir}/firmware-data.js"
 
   if [ ! -d "${main_dir}" ]; then
@@ -127,6 +148,9 @@ window.FIRMWARE_DATA = {
 EOF
 
   local first=true
+  local manifest_count
+  manifest_count=$(find "${main_dir}" -mindepth 2 -maxdepth 2 -type f -name manifest.json -print | wc -l)
+  local board_count=0
   for board_dir in "${main_dir}"/*/; do
     if [ ! -d "${board_dir}" ] || [ "$(basename "${board_dir}")" = "assets" ]; then
       continue
@@ -138,6 +162,7 @@ EOF
     if [ ! -f "${manifest}" ]; then
       continue
     fi
+    board_count=$((board_count + 1))
 
     # Extract data from manifest
     firmware_version=$(python3 -c "import json; print(json.load(open('${manifest}'))['firmware_version'])" 2>/dev/null || echo "unknown")
@@ -179,8 +204,8 @@ EOF
       "firmwareVersion": "${firmware_version}",
       "chipFamily": "${chip_family}",
       "hardwareStatus": "Verified",
-      "manifestPath": "/firmware/${board_name}/manifest.json",
-      "artifactBase": "/firmware/${board_name}/",
+      "manifestPath": "/firmware/main/${board_name}/manifest.json",
+      "artifactBase": "/firmware/main/${board_name}/",
       "artifacts": {
         "full": "${full_bin}",
         "update": "${update_bin}",
@@ -196,6 +221,11 @@ EOF
   ]
 };
 EOF
+
+  if [ "${manifest_count}" -gt 0 ] && [ "${board_count}" -eq 0 ]; then
+    echo "Main firmware manifests were found but no boards were added to the catalog." >&2
+    return 1
+  fi
 
   echo "Generated: ${output_file}"
 }
@@ -426,7 +456,7 @@ else
   BRANCH_CHOICE=""
   while [ -z "${BRANCH_CHOICE}" ]; do
     if [ ! -t 0 ]; then
-      BRANCH_CHOICE="1"
+      BRANCH_CHOICE="main"
       break
     fi
     printf "Enter choice [1]: "
@@ -446,6 +476,15 @@ else
 
   MESHCORE_MQTT_BRANCH="${BRANCH_CHOICE}"
 fi
+
+case "${MESHCORE_MQTT_BRANCH}" in
+  main|dev)
+    ;;
+  *)
+    echo "Invalid firmware branch: ${MESHCORE_MQTT_BRANCH} (expected main or dev)." >&2
+    exit 1
+    ;;
+esac
 
 echo "Selected branch: ${MESHCORE_MQTT_BRANCH}"
 echo
@@ -540,10 +579,10 @@ build_dynamic_env "${MESHCORE_MQTT_BASE_ENV}" "${BUILD_ENV}"
 echo
 echo "Building ${BUILD_ENV} from ${MESHCORE_MQTT_BASE_ENV} with:"
 echo "  Observer name:    ${MESHCORE_MQTT_ADVERT_NAME}"
-echo "  Admin password:   ${MESHCORE_MQTT_ADMIN_PASSWORD}"
+echo "  Admin password:   $(secret_state "${MESHCORE_MQTT_ADMIN_PASSWORD}")"
 echo "  Base env:         ${MESHCORE_MQTT_BASE_ENV}"
 echo "  WiFi SSID:        ${MESHCORE_MQTT_WIFI_SSID:-<set later via serial>}"
-echo "  WiFi password:    ${MESHCORE_MQTT_WIFI_PWD:-<set later via serial>}"
+echo "  WiFi password:    $(secret_state "${MESHCORE_MQTT_WIFI_PWD:-}")"
 echo "  WiFi OTA:         $([ "${MESHCORE_MQTT_ENABLE_OTA}" = "1" ] && printf enabled || printf disabled)"
 echo "  Model label:      ${MESHCORE_MQTT_MODEL}"
 echo "  Client version:   ${MESHCORE_MQTT_CLIENT_VERSION}"
@@ -555,7 +594,9 @@ for idx in 1 2 3 4 5 6; do
   broker_root_var="MESHCORE_MQTT_BROKER${idx}_TOPIC_ROOT"
   broker_iata_var="MESHCORE_MQTT_BROKER${idx}_IATA"
   broker_retain_var="MESHCORE_MQTT_BROKER${idx}_RETAIN_STATUS"
-  echo "  Broker ${idx}:        enabled=${!broker_enabled_var:-0} uri=${!broker_uri_var:-<set later via serial>} user=${!broker_user_var:-<set later via serial>} pass=${!broker_pass_var:-<set later via serial>} topic.root=${!broker_root_var:-<default>} iata=${!broker_iata_var:-<default>} retain=${!broker_retain_var:-0}"
+  broker_uri_value="${!broker_uri_var:-}"
+  broker_pass_value="${!broker_pass_var:-}"
+  echo "  Broker ${idx}:        enabled=${!broker_enabled_var:-0} uri=$(redact_uri "${broker_uri_value:-<set later via serial>}") user=${!broker_user_var:-<set later via serial>} pass=$(secret_state "${broker_pass_value}") topic.root=${!broker_root_var:-<default>} iata=${!broker_iata_var:-<default>} retain=${!broker_retain_var:-0}"
 done
 echo "  LoRa radio:       configurable at runtime via MeshCore CLI (default: 869.525 MHz / BW 62.5 / SF8)"
 if [ -n "${PLATFORMIO_CORE_DIR:-}" ]; then
