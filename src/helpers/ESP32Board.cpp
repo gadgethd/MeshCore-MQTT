@@ -38,13 +38,13 @@ bool ota_active = false;
 char ota_password[OTA_SECRET_CHARS + 1];
 
 void generateOTASecret(char destination[OTA_SECRET_CHARS + 1]) {
-  static constexpr char HEX[] = "0123456789abcdef";
+  static constexpr char HEX_DIGITS[] = "0123456789abcdef";
   uint8_t random_bytes[OTA_SECRET_BYTES];
   esp_fill_random(random_bytes, sizeof(random_bytes));
 
   for (size_t i = 0; i < sizeof(random_bytes); i++) {
-    destination[i * 2] = HEX[random_bytes[i] >> 4];
-    destination[i * 2 + 1] = HEX[random_bytes[i] & 0x0F];
+    destination[i * 2] = HEX_DIGITS[random_bytes[i] >> 4];
+    destination[i * 2 + 1] = HEX_DIGITS[random_bytes[i] & 0x0F];
   }
   destination[OTA_SECRET_CHARS] = '\0';
 }
