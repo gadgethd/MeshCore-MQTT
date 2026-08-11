@@ -83,6 +83,7 @@ A list of frequently-asked questions and answers for MeshCore
     - [7.5. Q: What is the format of a contact or channel QR code?](#75-q-what-is-the-format-of-a-contact-or-channel-qr-code)
     - [7.6. Q: How do I connect to the companion via Wi-Fi, e.g. using a Heltec V3?](#76-q-how-do-i-connect-to-the-companion-via-wi-fi-eg-using-a-heltec-v3)
     - [7.7. Q: I have a Station G2, or a Heltec V4, or an Ikoka Stick, or a radio with an EByte E22-900M30S or an EByte E22-900M33S module, what should their transmit power be set to?](#77-q-i-have-a-station-g2-or-a-heltec-v4-or-an-ikoka-stick-or-a-radio-with-an-ebyte-e22-900m30s-or-an-ebyte-e22-900m33s-module-what-should-their-transmit-power-be-set-to)
+    - [7.8. Q: How do I use Ethernet with a RAK4631?](#78-q-how-do-i-use-ethernet-with-a-rak4631)
 
 ## 1. Introduction
 
@@ -759,10 +760,12 @@ After this bootloader is flashed onto the device, you can trigger an over-the-ai
 1. On <https://flasher.meshcore.io>, download the **non-merged** version of the firmware for your ESP32 device (e.g. `Heltec_v3_repeater-v1.6.2-4449fd3.bin`, no `"merged"` in the file name).
 2. From the MeshCore app, log in remotely to the repeater you want to update with admin privileges.
 3. Go to the Command Line tab, type `start ota` and hit enter.
-4. You should see `OK` to confirm the repeater device is now in OTA mode.
-5. The command `start ota` on an ESP32-based device starts a Wi-Fi hotspot named `MeshCore OTA`.
-6. From your phone or computer connect to the 'MeshCore OTA' hotspot.
-7. From a browser, go to <http://192.168.4.1/update> and upload the non-merged bin from the flasher.
+4. The reply contains one-time passwords for the `MeshCore-OTA` Wi-Fi hotspot and the `meshcore-ota` HTTP user. Do not share or log this reply.
+5. From your phone or computer connect to the `MeshCore-OTA` hotspot with the supplied AP password.
+6. From a browser, go to <http://192.168.4.1/update>, enter the supplied HTTP credentials, and upload the non-merged bin from the flasher.
+7. The OTA service closes after ten minutes. Run `start ota` again after rebooting if the window expires. MQTT builds omit Wi-Fi OTA unless it was explicitly enabled when the firmware was built.
+
+ESP32 Secure Boot should be provisioned on production devices that enable OTA so the platform verifies firmware signatures before activation.
 
 
 ### 7.3. Q: Is there a way to lower the chance of a failed OTA device firmware update (DFU)?
@@ -820,3 +823,29 @@ For companion radios, you can set these radios' transmit power in the smartphone
 | **Ikoka Stick E22-900M33S**                                                        | 2W Model                            | 9 dBm                | 2W                     | **DO NOT EXCEED** (Risk of burn out) [data sheet](https://www.cdebyte.com/pdf-down.aspx?id=4216) Refer to your local government's requirements |
 | **Heltec V4**                                                                      | Standard Output                     | 10 dBm               | 22 dBm (~0.15W)        |                                                                                                                                                |
 |                                                                                    | High Output                         | 22 dBm               | 28 dBm (~0.5W to 0.6W) |                                                                                                                                                |
+
+---
+
+### 7.8. Q: How do I use Ethernet with a RAK4631?
+ **A:**
+MeshCore supports Ethernet on RAK4631 boards using the [RAK13800](https://docs.rakwireless.com/product-categories/wisblock/rak13800/datasheet/) WisBlock Ethernet module (based on the W5100S chip).
+
+**Hardware required:**
+- RAK4631 WisBlock Core
+- RAK19007 or RAK19018 WisBlock Base Board (with an available IO slot)
+- RAK13800 WisBlock Ethernet module
+- Ethernet cable connected to a network with a DHCP server
+
+**Firmware:**
+Flash one of the Ethernet-enabled firmware variants:
+- `RAK_4631_repeater_ethernet` - Repeater with Ethernet CLI access
+- `RAK_4631_room_server_ethernet` - Room server with Ethernet CLI access
+- `RAK_4631_companion_radio_ethernet` - Companion radio over Ethernet (replaces BLE)
+
+**Connecting:**
+- The device obtains an IP address via DHCP automatically on boot.
+- For repeaters and room servers, connect to the device on TCP port 23 using any TCP client (e.g. `nc <ip> 23` or PuTTY in raw mode). This gives you the same CLI available over serial/USB.
+- For companion radio firmware, the Ethernet interface replaces BLE as the transport to companion apps. Connect on TCP port 5000 (same as the WiFi companion radio).
+- Use the `eth.status` CLI command to check connection status and see the assigned IP address.
+
+---

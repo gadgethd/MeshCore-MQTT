@@ -78,55 +78,6 @@ for ini_path in sorted((repo_root / "variants").glob("*/platformio.ini")):
 PY
 }
 
-# Given an env name, look up the board flash size.
-# Only boards with 16MB flash keep OTA enabled in MQTT builds.
-get_board_flash_size() {
-  local env_name="$1"
-  local repo_root="$2"
-
-  # Find which variant/platformio.ini contains this env
-  local ini_file
-  ini_file=$(grep -rl "^\[env:${env_name}\]" "${repo_root}/variants"/*/platformio.ini 2>/dev/null | head -1)
-  if [ -z "$ini_file" ]; then
-    echo "unknown"
-    return
-  fi
-
-  # Get the board name - check env section first, then common sections
-  local board
-  board=$(sed -n "/^\[env:${env_name}\]/,/^\[/p" "$ini_file" | grep "^board =" | head -1 | sed 's/^board = *//' | sed 's/;.*//' | xargs)
-  if [ -z "$board" ]; then
-    board=$(grep "^board = " "$ini_file" | head -1 | sed 's/^board = *//' | sed 's/;.*//' | xargs)
-  fi
-  if [ -z "$board" ]; then
-    echo "unknown"
-    return
-  fi
-
-  # Check for ini-level flash override (e.g. board_upload.flash_size = 8MB)
-  local ini_flash
-  ini_flash=$(grep "^board_upload.flash_size" "$ini_file" | head -1 | sed 's/^board_upload.flash_size *= *//' | tr -d ' ')
-  if [ -n "$ini_flash" ]; then
-    echo "$ini_flash"
-    return
-  fi
-
-  # Look up board JSON
-  local board_json=""
-  if [ -f "${repo_root}/boards/${board}.json" ]; then
-    board_json="${repo_root}/boards/${board}.json"
-  elif [ -f "${HOME}/.platformio/platforms/espressif32/boards/${board}.json" ]; then
-    board_json="${HOME}/.platformio/platforms/espressif32/boards/${board}.json"
-  fi
-
-  if [ -z "$board_json" ]; then
-    echo "unknown"
-    return
-  fi
-
-  python3 -c "import json; d=json.load(open('${board_json}')); print(d.get('upload',{}).get('flash_size','unknown'))" 2>/dev/null || echo "unknown"
-}
-
 sanitize_name() {
   printf '%s' "$1" | tr -c '[:alnum:]._+-' '-'
 }
@@ -382,12 +333,9 @@ build_dynamic_env() {
   local base_env=$1
   local build_env=$2
 
-  # Only disable OTA for boards with <16MB flash to save flash space
-  local flash_size
-  flash_size=$(get_board_flash_size "${base_env}" "${REPO_ROOT}")
-  local disable_ota=""
-  if [ "${flash_size}" != "16MB" ]; then
-    disable_ota="  -D DISABLE_WIFI_OTA=1"
+  local ota_flag="  -D DISABLE_WIFI_OTA=1"
+  if [ "${MESHCORE_MQTT_ENABLE_OTA:-0}" = "1" ]; then
+    ota_flag="  -D ENABLE_WIFI_OTA=1"
   fi
 
   TEMP_CONF=$(mktemp /tmp/meshcore-mqtt-build-XXXXXX.ini)
@@ -405,7 +353,7 @@ build_flags =
   \${env:${base_env}.build_flags}
   -D WITH_MQTT_REPORTER=1
   -D AUTO_OFF_MILLIS=20000
-${disable_ota}
+${ota_flag}
   -D MESHCORE_GIT_COMMIT=\"${GIT_COMMIT}\"
 EOF
 }
@@ -527,8 +475,13 @@ prompt_value MESHCORE_MQTT_ADMIN_PASSWORD "Admin password" "password"
 prompt_value MESHCORE_MQTT_BASE_ENV "Base ESP repeater env" "${MESHCORE_MQTT_BASE_ENV:-$BASE_ENV_DEFAULT}" 0 1
 prompt_value MESHCORE_MQTT_WIFI_SSID "WiFi SSID default" "${MESHCORE_MQTT_WIFI_SSID:-}"
 prompt_value MESHCORE_MQTT_WIFI_PWD "WiFi password default" "${MESHCORE_MQTT_WIFI_PWD:-}" 1
+prompt_value MESHCORE_MQTT_ENABLE_OTA "Enable isolated, authenticated WiFi OTA (0/1)" "${MESHCORE_MQTT_ENABLE_OTA:-0}"
+if [ "${MESHCORE_MQTT_ENABLE_OTA}" != "0" ] && [ "${MESHCORE_MQTT_ENABLE_OTA}" != "1" ]; then
+  echo "MESHCORE_MQTT_ENABLE_OTA must be 0 or 1." >&2
+  exit 1
+fi
 prompt_value MESHCORE_MQTT_MODEL "Model label" "${MESHCORE_MQTT_MODEL:-$MESHCORE_MQTT_BASE_ENV}"
-prompt_value MESHCORE_MQTT_CLIENT_VERSION "Client version" "meshcore-mqtt/v1.16.0-rev3"
+prompt_value MESHCORE_MQTT_CLIENT_VERSION "Client version" "meshcore-mqtt/v1.17.0"
 
 prompt_value MESHCORE_MQTT_BROKER1_URI "MQTT broker 1 URI default" "${MESHCORE_MQTT_BROKER1_URI:-${MESHCORE_MQTT_URI:-}}"
 prompt_value MESHCORE_MQTT_BROKER1_USERNAME "MQTT broker 1 username default" "${MESHCORE_MQTT_BROKER1_USERNAME:-${MESHCORE_MQTT_USERNAME:-}}"
@@ -591,6 +544,7 @@ echo "  Admin password:   ${MESHCORE_MQTT_ADMIN_PASSWORD}"
 echo "  Base env:         ${MESHCORE_MQTT_BASE_ENV}"
 echo "  WiFi SSID:        ${MESHCORE_MQTT_WIFI_SSID:-<set later via serial>}"
 echo "  WiFi password:    ${MESHCORE_MQTT_WIFI_PWD:-<set later via serial>}"
+echo "  WiFi OTA:         $([ "${MESHCORE_MQTT_ENABLE_OTA}" = "1" ] && printf enabled || printf disabled)"
 echo "  Model label:      ${MESHCORE_MQTT_MODEL}"
 echo "  Client version:   ${MESHCORE_MQTT_CLIENT_VERSION}"
 for idx in 1 2 3 4 5 6; do
