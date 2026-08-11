@@ -150,6 +150,9 @@ void loop() {
 
   the_mesh.loop();
   sensors.loop();
+#if defined(ESP32)
+  board.serviceOTAUpdate();
+#endif
 #ifdef DISPLAY_CLASS
   ui_task.loop();
 #endif

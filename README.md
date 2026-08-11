@@ -30,6 +30,14 @@ That script will prompt for:
 * Model label
 * Client version
 
+Wi-Fi OTA is disabled in MQTT firmware by default, including release/CI images.
+The interactive builder can opt in by setting `MESHCORE_MQTT_ENABLE_OTA=1` (or
+answering `1` at its OTA prompt). When `start ota` is run, MQTT station traffic
+pauses, a password-protected `MeshCore-OTA` access point starts, and the command
+reply supplies separate one-time AP and HTTP credentials. The service closes
+after ten minutes and MQTT reconnects. Production devices that opt in should
+also provision ESP32 Secure Boot so the platform rejects unsigned images.
+
 Firmware output:
 
 * `firmware-update.bin` for app/update flashing at `0x10000`

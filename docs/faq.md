@@ -760,10 +760,12 @@ After this bootloader is flashed onto the device, you can trigger an over-the-ai
 1. On <https://flasher.meshcore.io>, download the **non-merged** version of the firmware for your ESP32 device (e.g. `Heltec_v3_repeater-v1.6.2-4449fd3.bin`, no `"merged"` in the file name).
 2. From the MeshCore app, log in remotely to the repeater you want to update with admin privileges.
 3. Go to the Command Line tab, type `start ota` and hit enter.
-4. You should see `OK` to confirm the repeater device is now in OTA mode.
-5. The command `start ota` on an ESP32-based device starts a Wi-Fi hotspot named `MeshCore OTA`.
-6. From your phone or computer connect to the 'MeshCore OTA' hotspot.
-7. From a browser, go to <http://192.168.4.1/update> and upload the non-merged bin from the flasher.
+4. The reply contains one-time passwords for the `MeshCore-OTA` Wi-Fi hotspot and the `meshcore-ota` HTTP user. Do not share or log this reply.
+5. From your phone or computer connect to the `MeshCore-OTA` hotspot with the supplied AP password.
+6. From a browser, go to <http://192.168.4.1/update>, enter the supplied HTTP credentials, and upload the non-merged bin from the flasher.
+7. The OTA service closes after ten minutes. Run `start ota` again after rebooting if the window expires. MQTT builds omit Wi-Fi OTA unless it was explicitly enabled when the firmware was built.
+
+ESP32 Secure Boot should be provisioned on production devices that enable OTA so the platform verifies firmware signatures before activation.
 
 
 ### 7.3. Q: Is there a way to lower the chance of a failed OTA device firmware update (DFU)?

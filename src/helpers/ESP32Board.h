@@ -155,6 +155,8 @@ public:
   }
 
   bool startOTAUpdate(const char* id, char reply[]) override;
+  void serviceOTAUpdate();
+  bool isOTAUpdateActive() const;
 
   void setInhibitSleep(bool inhibit) {
     inhibit_sleep = inhibit;

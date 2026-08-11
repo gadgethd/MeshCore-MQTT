@@ -32,6 +32,10 @@ RAW_OVERRIDES = {
     "MESHCORE_MQTT_RETAIN_STATUS": "MQTT_RETAIN_STATUS",
 }
 
+BOOLEAN_FEATURES = {
+    "MESHCORE_MQTT_ENABLE_OTA": "ENABLE_WIFI_OTA",
+}
+
 for idx in range(1, 7):
     RAW_OVERRIDES[f"MESHCORE_MQTT_BROKER{idx}_RETAIN_STATUS"] = f"MQTT_BROKER{idx}_RETAIN_STATUS"
     RAW_OVERRIDES[f"MESHCORE_MQTT_BROKER{idx}_ENABLED"] = f"MQTT_BROKER{idx}_ENABLED"
@@ -60,6 +64,16 @@ for env_name, macro_name in RAW_OVERRIDES.items():
     if value is None:
         continue
     append_define(macro_name, value)
+    applied.append(env_name)
+
+for env_name, macro_name in BOOLEAN_FEATURES.items():
+    value = os.environ.get(env_name)
+    if value is None:
+        continue
+    if value not in ("0", "1"):
+        raise ValueError(f"{env_name} must be 0 or 1")
+    if value == "1":
+        append_define(macro_name, 1)
     applied.append(env_name)
 
 if applied:
