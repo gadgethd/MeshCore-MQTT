@@ -51,6 +51,7 @@ public:
   void loop();
 
   void publishRxRaw(const uint8_t raw[], int len);
+  void clearPendingRxRaw();
   void publishRxPacket(mesh::Packet *pkt, int len, float score, int rssi, float snr, uint32_t duration_ms);
   void publishTxPacket(mesh::Packet *pkt, int len);
   void publishTxFail(mesh::Packet *pkt, int len, int reason = 0);

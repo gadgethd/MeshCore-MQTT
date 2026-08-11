@@ -201,6 +201,7 @@ void Dispatcher::checkRecv() {
       pkt = _mgr->allocNew();
       if (pkt == NULL) {
         MESH_DEBUG_PRINTLN("%s Dispatcher::checkRecv(): WARNING: received data, no unused packets available!", getLogDateTime());
+        logRxParseFailure();
       } else {
         if (tryParsePacket(pkt, raw, len)) {
           pkt->_snr = _radio->getLastSNR() * 4.0f;
@@ -210,6 +211,7 @@ void Dispatcher::checkRecv() {
         } else {
           _mgr->free(pkt);  // put back into pool
           pkt = NULL;
+          logRxParseFailure();
         }
       }
     } else {

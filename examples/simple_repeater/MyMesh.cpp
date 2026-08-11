@@ -526,6 +526,12 @@ void MyMesh::logRxRaw(float snr, float rssi, const uint8_t raw[], int len) {
 #endif
 }
 
+void MyMesh::logRxParseFailure() {
+#if defined(ESP32) && defined(WITH_MQTT_REPORTER)
+  mqtt_reporter.clearPendingRxRaw();
+#endif
+}
+
 void MyMesh::logRx(mesh::Packet *pkt, int len, float score) {
 #if defined(ESP32) && defined(WITH_MQTT_REPORTER)
   mqtt_reporter.publishRxPacket(pkt, len, score, _radio->getLastRSSI(), _radio->getLastSNR(), _radio->getEstAirtimeFor(len));

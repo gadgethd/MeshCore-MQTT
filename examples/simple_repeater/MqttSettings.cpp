@@ -4,9 +4,74 @@
 
 #include <Preferences.h>
 #include <nvs_flash.h>
+#include <helpers/UTF8Helpers.h>
 #include <string.h>
 #include <strings.h>
 #include <stdlib.h>
+
+namespace {
+
+constexpr size_t MQTT_TOPIC_PATH_BUFFER_SIZE = 384;
+constexpr size_t MQTT_NEIGHBORS_SUFFIX_LENGTH = sizeof("/neighbors") - 1;
+constexpr size_t MQTT_MAX_TOPIC_NAME_BYTES = 65535;
+constexpr size_t MQTT_PUBLIC_KEY_HEX_LENGTH = 64;
+
+bool validMqttTopicText(const char *text) {
+  if (text == nullptr) return false;
+
+  const size_t len = strlen(text);
+  if (mesh::validUtf8PrefixLength(text, len) != len) return false;
+
+  for (size_t i = 0; i < len; i++) {
+    const uint8_t byte = static_cast<uint8_t>(text[i]);
+    if (byte < 0x20 || byte == 0x7F || byte == '+' || byte == '#') return false;
+    if (byte == 0xC2 && i + 1 < len) {
+      const uint8_t next = static_cast<uint8_t>(text[i + 1]);
+      if (next >= 0x80 && next <= 0x9F) return false;
+    }
+  }
+  return true;
+}
+
+size_t expandedTopicLength(const char *topic_root, const char *iata) {
+  size_t length = 0;
+  for (size_t i = 0; topic_root[i] != '\0';) {
+    const char *token = nullptr;
+    size_t replacement_length = 0;
+    if (strncmp(topic_root + i, "{IATA}", 6) == 0) {
+      token = "{IATA}";
+      replacement_length = strlen(iata);
+    } else if (strncmp(topic_root + i, "<IATA>", 6) == 0) {
+      token = "<IATA>";
+      replacement_length = strlen(iata);
+    } else if (strncmp(topic_root + i, "{PUBLIC_KEY}", 12) == 0) {
+      token = "{PUBLIC_KEY}";
+      replacement_length = MQTT_PUBLIC_KEY_HEX_LENGTH;
+    } else if (strncmp(topic_root + i, "<PUBLIC_KEY>", 12) == 0) {
+      token = "<PUBLIC_KEY>";
+      replacement_length = MQTT_PUBLIC_KEY_HEX_LENGTH;
+    }
+
+    if (token != nullptr) {
+      length += replacement_length;
+      i += strlen(token);
+    } else {
+      length++;
+      i++;
+    }
+  }
+  return length;
+}
+
+bool validBrokerTopicConfig(const MqttBrokerConfig &cfg) {
+  if (!validMqttTopicText(cfg.topic_root) || !validMqttTopicText(cfg.iata)) return false;
+
+  const size_t expanded_length = expandedTopicLength(cfg.topic_root, cfg.iata);
+  if (expanded_length > MQTT_MAX_TOPIC_NAME_BYTES) return false;
+  return expanded_length + MQTT_NEIGHBORS_SUFFIX_LENGTH < MQTT_TOPIC_PATH_BUFFER_SIZE;
+}
+
+} // namespace
 
 MqttSettingsStore::MqttSettingsStore() : _fs(nullptr), _boot_count(0) {
   resetToDefaults();
@@ -529,6 +594,10 @@ bool MqttSettingsStore::setValue(const char *key, const char *value) {
     return false;
   }
 
+  if (!validBrokerTopicConfig(b)) {
+    b = previous;
+    return false;
+  }
   sanitizeBroker(b);
   if (!brokerCredentialsAllowed(idx)) {
     b = previous;
@@ -571,6 +640,11 @@ void MqttSettingsStore::sanitizeBroker(MqttBrokerConfig &cfg) {
   }
   if (cfg.neighbor_interval_secs < MQTT_NEIGHBOR_MIN_INTERVAL_SECS) {
     cfg.neighbor_interval_secs = MQTT_NEIGHBOR_MIN_INTERVAL_SECS;
+  }
+
+  if (!validBrokerTopicConfig(cfg)) {
+    StrHelper::strncpy(cfg.topic_root, MQTT_TOPIC_ROOT, sizeof(cfg.topic_root));
+    StrHelper::strncpy(cfg.iata, MQTT_IATA, sizeof(cfg.iata));
   }
 }
 

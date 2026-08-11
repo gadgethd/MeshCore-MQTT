@@ -275,6 +275,7 @@ EOF
     full_bin=$(python3 -c "import json; print(json.load(open('${manifest}'))['artifacts']['full'])" 2>/dev/null || echo "")
 
     # Determine chip family from board name heuristics
+    chip_family="ESP32"
     case "${board_name}" in
       *S3*|*s3*|*C3*|*c3*|*C6*|*c6*)
         chip_family="ESP32-S3"
@@ -283,7 +284,7 @@ EOF
         chip_family="ESP32-S2"
         ;;
       *)
-        chipFamily="ESP32"
+        chip_family="ESP32"
         ;;
     esac
 
@@ -302,7 +303,7 @@ EOF
       "label": "${label}",
       "firmwareName": "meshcore-mqtt",
       "firmwareVersion": "${firmware_version}-dev",
-      "chipFamily": "${chipFamily:-ESP32}",
+      "chipFamily": "${chip_family}",
       "hardwareStatus": "Dev build",
       "manifestPath": "/firmware/dev/${board_name}/manifest.json",
       "artifactBase": "/firmware/dev/${board_name}/",
@@ -386,6 +387,14 @@ build_flags =
 ${ota_flag}
   -D MESHCORE_GIT_COMMIT=\"${GIT_COMMIT}\"
 EOF
+
+  if [ "${MESHCORE_MQTT_ENABLE_OTA:-0}" = "1" ]; then
+    cat >> "${TEMP_CONF}" <<EOF
+lib_deps =
+  \${env:${base_env}.lib_deps}
+  \${esp32_ota.lib_deps}
+EOF
+  fi
 }
 
 prompt_value() {

@@ -157,6 +157,7 @@ protected:
   virtual DispatcherAction onRecvPacket(Packet* pkt) = 0;
 
   virtual void logRxRaw(float snr, float rssi, const uint8_t raw[], int len) { }   // custom hook
+  virtual void logRxParseFailure() { }   // raw frame was discarded before logRx()
 
   virtual void logRx(Packet* packet, int len, float score) { }   // hooks for custom logging
   virtual void logTx(Packet* packet, int len) { }
