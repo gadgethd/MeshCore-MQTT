@@ -28,4 +28,5 @@ platformio.local.ini
 /chatgpt*.md
 /webflasher/
 /.build-test/
+serial-logs/
 *.bin

@@ -1,5 +1,6 @@
 #include "MyMesh.h"
 #include <algorithm>
+#include <helpers/MqttCommandReply.h>
 
 #if defined(ESP32) && defined(WITH_MQTT_REPORTER)
   #include "MqttReporter.h"
@@ -157,7 +158,7 @@ uint8_t MyMesh::handleLoginReq(const mesh::Identity& sender, const uint8_t* secr
       perms = PERM_ACL_GUEST;
     } else {
 #if MESH_DEBUG
-      MESH_DEBUG_PRINTLN("Invalid password: %s", data);
+      MESH_DEBUG_PRINTLN("Invalid password");
 #endif
       return 0;
     }
@@ -788,7 +789,7 @@ void MyMesh::onPeerDataRecv(mesh::Packet *packet, uint8_t type, int sender_idx, 
       if (is_retry) {
         *reply = 0;
       } else {
-        handleCommand(sender_timestamp, command, reply);
+        handleCommand(sender_timestamp, command, reply, sizeof(temp) - 5);
       }
       int text_len = strlen(reply);
       if (text_len > 0) {
@@ -1265,17 +1266,30 @@ void MyMesh::clearStats() {
   tx_queue_peak_len = 0;
 }
 
-bool MyMesh::handleMqttCommand(uint32_t sender_timestamp, char *command, char *reply) {
+bool MyMesh::handleMqttCommand(uint32_t sender_timestamp, char *command, char *reply, size_t reply_size) {
 #if defined(ESP32) && defined(WITH_MQTT_REPORTER)
+  const bool is_mqtt_command =
+      strcmp(command, "show mqtt") == 0 || strcmp(command, "get mqtt") == 0 ||
+      strcmp(command, "show mqtt stats") == 0 || memcmp(command, "show mqtt stats.", 16) == 0 ||
+      memcmp(command, "show mqtt.", 10) == 0 || memcmp(command, "mqtt reconnect", 14) == 0 ||
+      strcmp(command, "mqtt reset") == 0 || memcmp(command, "get mqtt.", 9) == 0 ||
+      memcmp(command, "set mqtt.", 9) == 0;
+  if (!is_mqtt_command) return false;
+
+  if (sender_timestamp != 0) {
+    writeMqttReply(reply, reply_size, "Err - serial only");
+    return true;
+  }
+
   if (strcmp(command, "show mqtt") == 0 || strcmp(command, "get mqtt") == 0) {
     mqtt_reporter.printConfig(Serial);
-    reply[0] = 0;
+    writeMqttReply(reply, reply_size, "");
     return true;
   }
 
   if (strcmp(command, "show mqtt stats") == 0) {
     mqtt_reporter.printStats(Serial);
-    reply[0] = 0;
+    writeMqttReply(reply, reply_size, "");
     return true;
   }
 
@@ -1283,9 +1297,9 @@ bool MyMesh::handleMqttCommand(uint32_t sender_timestamp, char *command, char *r
     int idx = atoi(command + 16) - 1;
     if (idx >= 0 && idx < MQTT_MAX_BROKERS) {
       mqtt_reporter.printStats(Serial, idx);
-      reply[0] = 0;
+      writeMqttReply(reply, reply_size, "");
     } else {
-      strcpy(reply, "Err - broker 1-6");
+      writeMqttReply(reply, reply_size, "Err - broker 1-6");
     }
     return true;
   }
@@ -1295,9 +1309,9 @@ bool MyMesh::handleMqttCommand(uint32_t sender_timestamp, char *command, char *r
     int idx = atoi(command + 10) - 1;
     if (idx >= 0 && idx < MQTT_MAX_BROKERS) {
       mqtt_reporter.printConfig(Serial, idx);
-      reply[0] = 0;
+      writeMqttReply(reply, reply_size, "");
     } else {
-      strcpy(reply, "Err - broker 1-6");
+      writeMqttReply(reply, reply_size, "Err - broker 1-6");
     }
     return true;
   }
@@ -1306,15 +1320,15 @@ bool MyMesh::handleMqttCommand(uint32_t sender_timestamp, char *command, char *r
     int idx = -1;
     if (command[14] == ' ') idx = atoi(command + 15) - 1;
     mqtt_reporter.reconnect(idx);
-    strcpy(reply, "OK");
+    writeMqttReply(reply, reply_size, "OK");
     return true;
   }
 
   if (strcmp(command, "mqtt reset") == 0) {
     if (mqtt_reporter.resetConfig()) {
-      strcpy(reply, "OK");
+      writeMqttReply(reply, reply_size, "OK");
     } else {
-      strcpy(reply, "Err - save failed");
+      writeMqttReply(reply, reply_size, "Err - save failed");
     }
     return true;
   }
@@ -1322,9 +1336,9 @@ bool MyMesh::handleMqttCommand(uint32_t sender_timestamp, char *command, char *r
   if (memcmp(command, "get mqtt.", 9) == 0) {
     char value[160];
     if (mqtt_reporter.getConfigValue(command + 9, value, sizeof(value))) {
-      snprintf(reply, 160, "> %s", value);
+      writeMqttValueReply(reply, reply_size, value);
     } else {
-      strcpy(reply, "Err - unknown mqtt key");
+      writeMqttReply(reply, reply_size, "Err - unknown mqtt key");
     }
     return true;
   }
@@ -1333,7 +1347,7 @@ bool MyMesh::handleMqttCommand(uint32_t sender_timestamp, char *command, char *r
     char *key = command + 9;
     char *value = strchr(key, ' ');
     if (value == NULL) {
-      strcpy(reply, "Err - bad params");
+      writeMqttReply(reply, reply_size, "Err - bad params");
       return true;
     }
 
@@ -1341,9 +1355,9 @@ bool MyMesh::handleMqttCommand(uint32_t sender_timestamp, char *command, char *r
     while (*value == ' ') value++;
 
     if (mqtt_reporter.setConfigValue(key, value)) {
-      strcpy(reply, "OK");
+      writeMqttReply(reply, reply_size, "OK");
     } else {
-      strcpy(reply, "Err - save failed");
+      writeMqttReply(reply, reply_size, "Err - save failed");
     }
     return true;
   }
@@ -1352,13 +1366,13 @@ bool MyMesh::handleMqttCommand(uint32_t sender_timestamp, char *command, char *r
   return false;
 }
 
-void MyMesh::handleCommand(uint32_t sender_timestamp, char *command, char *reply) {
+void MyMesh::handleCommand(uint32_t sender_timestamp, char *command, char *reply, size_t reply_size) {
   if (region_load_active) {
     if (StrHelper::isBlank(command)) {  // empty/blank line, signal to terminate 'load' operation
       region_map = temp_map;  // copy over the temp instance as new current map
       region_load_active = false;
 
-      sprintf(reply, "OK - loaded %d regions", region_map.getCount());
+      snprintf(reply, reply_size, "OK - loaded %d regions", region_map.getCount());
     } else {
       char *np = command;
       while (*np == ' ') np++;   // skip indent
@@ -1382,7 +1396,7 @@ void MyMesh::handleCommand(uint32_t sender_timestamp, char *command, char *reply
           }
         }
       }
-      reply[0] = 0;
+      if (reply_size > 0) reply[0] = 0;
     }
     return;
   }
@@ -1390,8 +1404,13 @@ void MyMesh::handleCommand(uint32_t sender_timestamp, char *command, char *reply
   while (*command == ' ') command++; // skip leading spaces
 
   if (strlen(command) > 4 && command[2] == '|') { // optional prefix (for companion radio CLI)
+    if (reply_size < 3) {
+      if (reply_size > 0) reply[0] = 0;
+      return;
+    }
     memcpy(reply, command, 3);                    // reflect the prefix back
     reply += 3;
+    reply_size -= 3;
     command += 3;
   }
 
@@ -1400,7 +1419,7 @@ void MyMesh::handleCommand(uint32_t sender_timestamp, char *command, char *reply
     char* hex = &command[8];
     char* sp = strchr(hex, ' ');   // look for separator char
     if (sp == NULL) {
-      strcpy(reply, "Err - bad params");
+      writeMqttReply(reply, reply_size, "Err - bad params");
     } else {
       *sp++ = 0;   // replace space with null terminator
 
@@ -1410,12 +1429,12 @@ void MyMesh::handleCommand(uint32_t sender_timestamp, char *command, char *reply
         uint8_t perms = atoi(sp);
         if (acl.applyPermissions(self_id, pubkey, hex_len / 2, perms)) {
           dirty_contacts_expiry = futureMillis(LAZY_CONTACTS_WRITE_DELAY);   // trigger acl.save()
-          strcpy(reply, "OK");
+          writeMqttReply(reply, reply_size, "OK");
         } else {
-          strcpy(reply, "Err - invalid params");
+          writeMqttReply(reply, reply_size, "Err - invalid params");
         }
       } else {
-        strcpy(reply, "Err - bad pubkey");
+        writeMqttReply(reply, reply_size, "Err - bad pubkey");
       }
     }
   } else if (sender_timestamp == 0 && strcmp(command, "get acl") == 0) {
@@ -1428,20 +1447,23 @@ void MyMesh::handleCommand(uint32_t sender_timestamp, char *command, char *reply
       mesh::Utils::printHex(Serial, c->id.pub_key, PUB_KEY_SIZE);
       Serial.printf("\n");
     }
-    reply[0] = 0;
+    if (reply_size > 0) reply[0] = 0;
   } else if (memcmp(command, "discover.neighbors", 18) == 0) {
     const char* sub = command + 18;
     while (*sub == ' ') sub++;
     if (*sub != 0) {
-      strcpy(reply, "Err - discover.neighbors has no options");
+      writeMqttReply(reply, reply_size, "Err - discover.neighbors has no options");
     } else {
       sendNodeDiscoverReq();
-      strcpy(reply, "OK - Discover sent");
+      writeMqttReply(reply, reply_size, "OK - Discover sent");
     }
-  } else if (handleMqttCommand(sender_timestamp, command, reply)) {
+  } else if (handleMqttCommand(sender_timestamp, command, reply, reply_size)) {
     // already handled
   } else{
-    _cli.handleCommand(sender_timestamp, command, reply);  // common CLI commands
+    char cli_reply[160];
+    cli_reply[0] = 0;
+    _cli.handleCommand(sender_timestamp, command, cli_reply);  // common CLI commands
+    writeMqttReply(reply, reply_size, cli_reply);
   }
 }
 

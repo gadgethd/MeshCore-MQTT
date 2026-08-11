@@ -256,8 +256,7 @@ void CommonCLI::handleCommand(uint32_t sender_timestamp, char* command, char* re
       // change admin password
       StrHelper::strncpy(_prefs->password, &command[9], sizeof(_prefs->password));
       savePrefs();
-      sprintf(reply, "password now: ");
-      StrHelper::strncpy(&reply[14], _prefs->password, 160-15);   // echo back just to let admin know for sure!!
+      sprintf(reply, "password updated");
     } else if (memcmp(command, "clear stats", 11) == 0) {
       _callbacks->clearStats();
       strcpy(reply, "(OK - stats reset)");
@@ -805,7 +804,7 @@ void CommonCLI::handleGetCmd(uint32_t sender_timestamp, char* command, char* rep
   } else if (memcmp(config, "advert.interval", 15) == 0) {
     sprintf(reply, "> %d", ((uint32_t) _prefs->advert_interval) * 2);
   } else if (memcmp(config, "guest.password", 14) == 0) {
-    sprintf(reply, "> %s", _prefs->guest_password);
+    sprintf(reply, "> %s", _prefs->guest_password[0] ? "******" : "");
   } else if (sender_timestamp == 0 && memcmp(config, "prv.key", 7) == 0) {  // from serial command line only
     uint8_t prv_key[PRV_KEY_SIZE];
     int len = _callbacks->getSelfId().writeTo(prv_key, PRV_KEY_SIZE);
@@ -901,7 +900,7 @@ void CommonCLI::handleGetCmd(uint32_t sender_timestamp, char* command, char* rep
   } else if (memcmp(config, "bridge.channel", 14) == 0) {
     sprintf(reply, "> %d", (uint32_t)_prefs->bridge_channel);
   } else if (memcmp(config, "bridge.secret", 13) == 0) {
-    sprintf(reply, "> %s", _prefs->bridge_secret);
+    sprintf(reply, "> %s", _prefs->bridge_secret[0] ? "******" : "");
 #endif
   } else if (memcmp(config, "bootloader.ver", 14) == 0) {
   #ifdef NRF52_PLATFORM

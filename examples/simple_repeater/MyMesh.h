@@ -128,7 +128,7 @@ class MyMesh : public mesh::Mesh, public CommonCLICallbacks {
   uint8_t handleAnonClockReq(const mesh::Identity& sender, uint32_t sender_timestamp, const uint8_t* data);
   int handleRequest(ClientInfo* sender, uint32_t sender_timestamp, uint8_t* payload, size_t payload_len);
   mesh::Packet* createSelfAdvert();
-  bool handleMqttCommand(uint32_t sender_timestamp, char *command, char *reply);
+  bool handleMqttCommand(uint32_t sender_timestamp, char *command, char *reply, size_t reply_size);
 
   File openAppend(const char* fname);
   bool isLooped(const mesh::Packet* packet, const uint8_t max_counters[]);
@@ -237,7 +237,7 @@ public:
   void saveIdentity(const mesh::LocalIdentity& new_id) override;
   void clearStats() override;
 
-  void handleCommand(uint32_t sender_timestamp, char* command, char* reply);
+  void handleCommand(uint32_t sender_timestamp, char* command, char* reply, size_t reply_size);
   void loop();
 
 #if defined(WITH_BRIDGE)

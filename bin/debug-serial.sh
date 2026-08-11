@@ -5,6 +5,12 @@ SCRIPT_DIR=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)
 REPO_ROOT=$(cd -- "${SCRIPT_DIR}/.." && pwd)
 LOG_DIR="${REPO_ROOT}/serial-logs"
 LOCAL_PIO_VENV="${REPO_ROOT}/.venv-platformio"
+LOG_RETENTION_DAYS="${MESHCORE_SERIAL_LOG_RETENTION_DAYS:-30}"
+
+# Serial logs can contain device diagnostics. Keep them private and prune old
+# captures so credentials accidentally emitted by older firmware do not remain
+# indefinitely on disk.
+umask 077
 
 PORT="${1:-}"
 BAUD="${2:-115200}"
@@ -24,7 +30,8 @@ if [ -z "${PORT}" ]; then
   exit 1
 fi
 
-mkdir -p "${LOG_DIR}"
+mkdir -p -m 700 "${LOG_DIR}"
+find "${LOG_DIR}" -type f -name '*.log' -mtime "+${LOG_RETENTION_DAYS}" -delete
 TIMESTAMP=$(date +"%Y-%m-%d_%H-%M-%S")
 LOG_FILE="${LOG_DIR}/meshcore_${TIMESTAMP}.log"
 

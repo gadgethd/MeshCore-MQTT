@@ -67,6 +67,8 @@ run_build() {
       export PLATFORMIO_CORE_DIR=/tmp/pio-core
     fi
     export MESHCORE_MQTT_ADVERT_NAME="${MESHCORE_MQTT_ADVERT_NAME:-MeshCore MQTT Build Test}"
+    export BRANCH=main
+    export WEBFLASHER_AUTO_DEPLOY=0
     export MESHCORE_MQTT_ADMIN_PASSWORD="${MESHCORE_MQTT_ADMIN_PASSWORD:-password}"
     export MESHCORE_MQTT_BASE_ENV="${base_env}"
     export MESHCORE_MQTT_WIFI_SSID="${MESHCORE_MQTT_WIFI_SSID:-build-test-ssid}"
