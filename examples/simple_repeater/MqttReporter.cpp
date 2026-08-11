@@ -339,16 +339,17 @@ void MqttReporter::loop() {
   }
   _wifi_consecutive_failures = 0;
 
-  // Check if any enabled broker needs NTP
-  bool any_needs_sync = false;
+  // MQTT payloads carry timestamps on every transport, not only TLS brokers.
+  bool mqtt_reporting_enabled = false;
   for (int i = 0; i < MQTT_MAX_BROKERS; i++) {
-    if (_settings.broker(i).enabled && brokerNeedsTimeSync(i)) {
-      any_needs_sync = true;
+    const MqttBrokerConfig &broker = _settings.broker(i);
+    if (broker.enabled && broker.uri[0] != '\0') {
+      mqtt_reporting_enabled = true;
       break;
     }
   }
 
-  if (!_time_synced && any_needs_sync) {
+  if (!_time_synced && mqtt_reporting_enabled) {
     checkNtpSyncComplete();
     if (!_time_synced && !_ntp_sync_pending &&
         (!_ntp_attempted || (uint32_t)(now - _last_ntp_attempt) >= MQTT_NTP_RETRY_INTERVAL_MS)) {
@@ -411,6 +412,10 @@ void MqttReporter::publishRxRaw(const uint8_t raw[], int len) {
     return;
   }
   _last_rx_raw = bytesToHex(raw, len);
+}
+
+void MqttReporter::clearPendingRxRaw() {
+  _last_rx_raw = "";
 }
 
 void MqttReporter::publishRxPacket(mesh::Packet *pkt, int len, float score, int rssi, float snr, uint32_t duration_ms) {
@@ -1249,7 +1254,11 @@ String MqttReporter::buildStatusPayload(int broker_idx, const char *status) cons
   payload += ",\"firmware_version\":\"" + jsonEscape(FIRMWARE_VERSION) + "\"";
   payload += ",\"radio\":\"" + jsonEscape(buildRadioString().c_str()) + "\"";
   payload += ",\"client_version\":\"" + jsonEscape(shared.client_version) + "\"";
-  payload += ",\"timestamp\":\"" + jsonEscape(buildIsoTimestamp().c_str()) + "\"";
+  if (_time_synced) {
+    payload += ",\"timestamp\":\"" + jsonEscape(buildIsoTimestamp().c_str()) + "\"";
+  } else {
+    payload += ",\"timestamp\":null";
+  }
   payload += ",\"stats\":" + buildStatusStatsPayload(broker_idx);
   payload += "}";
   return payload;
@@ -1274,11 +1283,19 @@ String MqttReporter::buildPacketPayload(
   payload = "{";
   payload += "\"origin\":\"" + jsonEscape(_mesh->getNodeName()) + "\"";
   payload += ",\"origin_id\":\"" + String(_origin_id) + "\"";
-  payload += ",\"timestamp\":\"" + jsonEscape(buildIsoTimestamp().c_str()) + "\"";
+  if (_time_synced) {
+    payload += ",\"timestamp\":\"" + jsonEscape(buildIsoTimestamp().c_str()) + "\"";
+  } else {
+    payload += ",\"timestamp\":null";
+  }
   payload += ",\"type\":\"PACKET\"";
   payload += ",\"direction\":\"" + jsonEscape(direction) + "\"";
-  payload += ",\"time\":\"" + jsonEscape(buildTimeField().c_str()) + "\"";
-  payload += ",\"date\":\"" + jsonEscape(buildDateField().c_str()) + "\"";
+  if (_time_synced) {
+    payload += ",\"time\":\"" + jsonEscape(buildTimeField().c_str()) + "\"";
+    payload += ",\"date\":\"" + jsonEscape(buildDateField().c_str()) + "\"";
+  } else {
+    payload += ",\"time\":null,\"date\":null";
+  }
   payload += ",\"len\":\"" + String(len) + "\"";
   payload += ",\"packet_type\":\"" + String(pkt->getPayloadType()) + "\"";
   payload += ",\"route\":\"" + String(pkt->isRouteDirect() ? "D" : "F") + "\"";
@@ -1335,6 +1352,7 @@ bool MqttReporter::setConfigValue(const char *key, const char *value) {
     _settings = previous;
     return false;
   }
+  _config_crc32 = _settings.configCrc32();
   _identity_strings_dirty = true;
   ensureIdentityStrings();
   return true;
@@ -1347,6 +1365,7 @@ bool MqttReporter::resetConfig() {
     _settings = previous;
     return false;
   }
+  _config_crc32 = _settings.configCrc32();
   _identity_strings_dirty = true;
   ensureIdentityStrings();
   resetAllConnections();
