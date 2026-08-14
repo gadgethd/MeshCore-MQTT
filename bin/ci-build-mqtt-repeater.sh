@@ -118,6 +118,9 @@ EOF
   if [ -f "${build_subdir}/partitions.bin" ]; then
     cp "${build_subdir}/partitions.bin" "${OUT_DIR}/${base_env}/${firmware_name}-partitions.bin"
   fi
+  if [ -f "${build_subdir}/boot_app0.bin" ]; then
+    cp "${build_subdir}/boot_app0.bin" "${OUT_DIR}/${base_env}/${firmware_name}-boot_app0.bin"
+  fi
 
   echo "  OK: ${base_env}"
   rm -f "${temp_conf}"
