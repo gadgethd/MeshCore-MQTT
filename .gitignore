@@ -19,6 +19,7 @@ venv/
 platformio.local.ini
 
 # Local AI scratch notes
+.tokensave/
 /v4-3.md
 /ai-*.md
 /*-ai.md
