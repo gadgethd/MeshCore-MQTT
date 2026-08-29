@@ -18,6 +18,25 @@ compile_commands.json
 venv/
 platformio.local.ini
 
+# Credentials, private keys, and local runtime material
+.env
+.env.*
+!.env.example
+secrets/
+credentials/
+*.pem
+*.key
+*.p12
+*.pfx
+*.jks
+*.keystore
+*.secret
+*.log
+
+# Python test caches
+__pycache__/
+*.py[cod]
+
 # Local AI scratch notes
 /v4-3.md
 /ai-*.md

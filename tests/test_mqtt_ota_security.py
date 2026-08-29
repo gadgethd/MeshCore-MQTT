@@ -75,7 +75,10 @@ class MqttOtaSecurityTests(unittest.TestCase):
             section = environment_section(read(path), name)
             self.assertIn("-D WITH_MQTT_REPORTER=1", section)
             self.assertIn("-D DISABLE_WIFI_OTA=1", section)
-            self.assertIn("${esp32_ota.lib_deps}", section)
+            # Named production profiles compile OTA out completely. The
+            # interactive generator adds OTA dependencies only alongside the
+            # explicit MESHCORE_MQTT_ENABLE_OTA=1 opt-in.
+            self.assertNotIn("${esp32_ota.lib_deps}", section)
 
     def test_operator_can_explicitly_enable_ota(self):
         overrides = read("arch/esp32/extra_scripts/mqtt_build_vars.py")

@@ -1,0 +1,4 @@
+title = "MeshCore MQTT gitleaks configuration"
+
+[extend]
+useDefault = true
