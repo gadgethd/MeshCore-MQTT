@@ -30,3 +30,4 @@ platformio.local.ini
 /.build-test/
 serial-logs/
 *.bin
+!test/fixtures/prefs/*.bin
