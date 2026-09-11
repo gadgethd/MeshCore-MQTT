@@ -174,3 +174,19 @@ connect attempt through a shared policy (`src/helpers/MqttReconnectPolicy.h`):
 - Counters: `show mqtt stats[.N]` prints `reconnect.rung`, `reconnect.breaker`
   and `reconnect.next_in_ms`; the periodic status stats payload carries
   `reconnect_rung`, `reconnect_breaker` and `reconnect_next_in_ms`.
+
+## Config file versioning & downgrades
+
+The settings file (`/mqtt.cfg`, plus `.bak`) carries a magic + version header.
+
+- **Known versions** (1-3) are migrated to the current v4 layout on load.
+- **Unknown versions** (a file written by a NEWER firmware) are left
+  untouched: the store falls back to defaults and a **write-hold** blocks
+  every save, so a downgraded build cannot clobber the newer configuration.
+  The device logs `MQTT settings: config version N not recognized ...` and
+  keeps the last-known-good `.bak` untouched as well. Run `mqtt reset` to
+  explicitly adopt this firmware (clears the hold and writes a fresh file).
+- Within a version the layout is pinned by static_asserts; any field/order
+  change requires a version bump.
+- File removals go through `removeIfExists()`: LittleFS logs an error for
+  removing a missing path, which used to spam the serial log on every save.

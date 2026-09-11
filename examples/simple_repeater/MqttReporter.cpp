@@ -64,6 +64,15 @@ constexpr int MQTT_OUTBOX_HIGH_WATER = 16 * 1024;
 constexpr int MQTT_OUTBOX_HIGH_WATER = 8 * 1024;
 #endif
 constexpr uint32_t MQTT_CONNECT_RETRY_MAX_MS = 300000UL;
+
+// Heap budget for TLS sessions on boards without PSRAM: every wss/mqtts slot
+// costs tens of KB of internal RAM (buffers + TLS state), so limit how many
+// may run at once. Slots beyond the budget wait and retry periodically.
+#if defined(BOARD_HAS_PSRAM)
+constexpr int MQTT_MAX_ACTIVE_TLS = MQTT_MAX_BROKERS;
+#else
+constexpr int MQTT_MAX_ACTIVE_TLS = 2;
+#endif
 constexpr time_t MQTT_VALID_EPOCH = 1700000000;
 
 const char *resetReasonString(int reason) {
@@ -275,6 +284,9 @@ MqttReporter::MqttReporter(MyMesh &mesh, mesh::RTCClock &clock)
     _clients[i].reconnect_attempt_head = 0;
     _clients[i].reconnect_attempt_count = 0;
     _clients[i].last_offline_epoch = 0;
+    _clients[i].heap_inactive = false;
+    _clients[i].last_error_type = -1;
+    _clients[i].last_error_code = -1;
     mqtt_reconnect::reset(_clients[i].recon);
     _clients[i].recon_seeded = false;
     for (uint8_t q = 0; q < MQTT_PUBLISH_QUEUE_SIZE; q++) {
@@ -633,6 +645,28 @@ void MqttReporter::processBrokerReconnects(uint32_t now_ms) {
     mqtt_reconnect::onTick(bc.recon, now_ms);
 
     if (!bc.started) {
+      // Heap budget: boards without PSRAM only fit so many TLS sessions at
+      // once; keep surplus TLS slots parked and re-evaluate every minute.
+      int active_tls = 0;
+      for (int j = 0; j < MQTT_MAX_BROKERS; j++) {
+        if (_clients[j].started && _clients[j].client != nullptr &&
+            brokerNeedsTimeSync(j)) {
+          active_tls++;
+        }
+      }
+      if (brokerNeedsTimeSync(i) && active_tls >= MQTT_MAX_ACTIVE_TLS) {
+        if (!bc.heap_inactive) {
+          bc.heap_inactive = true;
+          Serial.printf("MQTT reporter: broker %d inactive (heap budget: max %d active TLS brokers)\n",
+                        i + 1, MQTT_MAX_ACTIVE_TLS);
+        }
+        if (!bc.recon.attempt_pending) {
+          bc.recon.attempt_pending = true;
+          bc.recon.next_attempt_ms = now_ms + 60000UL;
+        }
+        continue;
+      }
+      bc.heap_inactive = false;
       if (mqtt_reconnect::attemptDue(bc.recon, now_ms)) {
         connectMQTT(i);
       }
@@ -1019,12 +1053,14 @@ void MqttReporter::handleMqttEvent(const CallbackEvent &event) {
       }
       break;
     case CallbackEventType::MqttError:
-      Serial.printf("MQTT reporter: broker %d error type=%d\n", event.broker_idx + 1,
-                    event.error_type);
+      Serial.printf("MQTT reporter: broker %d error type=%d code=%d\n", event.broker_idx + 1,
+                    event.error_type, event.error_code);
       bc.connected = false;
       bc.connected_since_ms = 0;
       bc.started = true;
       bc.online_status_pending = false;
+      bc.last_error_type = event.error_type;
+      bc.last_error_code = event.error_code;
       bc.error_events++;
       break;
     default:
@@ -1353,6 +1389,9 @@ String MqttReporter::buildStatusStatsPayload(int broker_idx) const {
     stats += ",\"reconnect_rung\":" + String(bc.recon.rung);
     stats += ",\"reconnect_breaker\":" + String(bc.recon.breaker ? "true" : "false");
     stats += ",\"reconnect_next_in_ms\":" + String(mqtt_reconnect::nextWaitMs(bc.recon, now_ms));
+    stats += ",\"last_error_type\":" + String(bc.last_error_type);
+    stats += ",\"last_error_code\":" + String(bc.last_error_code);
+    stats += ",\"heap_inactive\":" + String(bc.heap_inactive ? "true" : "false");
     String broker_uri = sanitizeBrokerUri(broker.uri);
     stats += ",\"broker_uri\":\"" + jsonEscape(broker_uri.c_str()) + "\"";
     stats += ",\"broker_username\":\"" + jsonEscape(broker.username) + "\"";
@@ -1501,6 +1540,7 @@ bool MqttReporter::setConfigValue(const char *key, const char *value) {
 
 bool MqttReporter::resetConfig() {
   _settings.resetToDefaults();
+  _settings.clearWriteHold();
   if (!_settings.save()) {
     _settings.load();
     _config_crc32 = _settings.configCrc32();
@@ -1613,6 +1653,10 @@ void MqttReporter::printBrokerStats(Print &out, int idx) const {
   snprintf(line, sizeof(line), "    publish.queue_drops=%lu", (unsigned long)bc.queue_drops);
   out.println(line);
   snprintf(line, sizeof(line), "    publish.outbox_drops=%lu", (unsigned long)bc.outbox_drops);
+  out.println(line);
+  snprintf(line, sizeof(line), "    last_error.type=%d code=%d", bc.last_error_type, bc.last_error_code);
+  out.println(line);
+  snprintf(line, sizeof(line), "    heap.inactive=%s", bc.heap_inactive ? "yes" : "no");
   out.println(line);
   snprintf(line, sizeof(line), "    connected=%s", bc.connected ? "yes" : "no");
   out.println(line);
@@ -1729,6 +1773,14 @@ esp_err_t MqttReporter::mqttEventHandler(esp_mqtt_event_handle_t event) {
     case MQTT_EVENT_ERROR:
       callback.type = CallbackEventType::MqttError;
       callback.error_type = event->error_handle ? event->error_handle->error_type : -1;
+      callback.error_code = -1;
+      if (event->error_handle != nullptr) {
+        // The connect return code is only meaningful for refused connects;
+        // the socket errno is the useful detail for transport failures.
+        callback.error_code = (event->error_handle->error_type == MQTT_ERROR_TYPE_TCP_TRANSPORT)
+                                  ? (int)event->error_handle->esp_transport_sock_errno
+                                  : (int)event->error_handle->connect_return_code;
+      }
       break;
     default:
       return ESP_OK;

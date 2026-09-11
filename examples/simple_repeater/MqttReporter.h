@@ -124,6 +124,9 @@ private:
     uint8_t reconnect_attempt_head;
     uint8_t reconnect_attempt_count;
     uint32_t last_offline_epoch;
+    bool heap_inactive;
+    int last_error_type;
+    int last_error_code;
     mqtt_reconnect::State recon;
     bool recon_seeded;
   };
@@ -160,6 +163,7 @@ private:
     int8_t broker_idx;
     int wifi_reason;
     int error_type;
+    int error_code;
     esp_mqtt_client_handle_t client;
   };
 
