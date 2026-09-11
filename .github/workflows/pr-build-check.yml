@@ -29,6 +29,10 @@ jobs:
           - Heltec_v3_companion_radio_ble
           - Heltec_v3_repeater
           - Heltec_v3_room_server
+          # ESP32-S3 MQTT repeater targets (fork-specific MQTT reporter smoke builds)
+          - Heltec_v3_repeater_mqtt
+          - heltec_v4_repeater_mqtt
+          - LilyGo_TBeam_1W_repeater_mqtt
           # nRF52
           - RAK_4631_companion_radio_ble
           - RAK_4631_companion_radio_ethernet
