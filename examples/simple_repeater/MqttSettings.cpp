@@ -150,31 +150,41 @@ bool MqttSettingsStore::loadPath(const char *path) {
   if (!file) return false;
 
   if (header.version == 1) {
-    PersistedMqttConfigV1 v1;
-    size_t bytes_read = file.read((uint8_t *)&v1, sizeof(v1));
+    // Legacy layout: read through a heap copy — the legacy structs are
+    // hundreds of bytes to multi-KB and must never be placed on the stack
+    // (that is exactly the overflow fixed here).
+    PersistedMqttConfigV1 *v1 = (PersistedMqttConfigV1 *)malloc(sizeof(PersistedMqttConfigV1));
+    if (v1 == nullptr) { file.close(); return false; }
+    size_t bytes_read = file.read((uint8_t *)v1, sizeof(*v1));
     file.close();
-    if (bytes_read != sizeof(v1)) return false;
-    return loadV1((const uint8_t *)&v1, bytes_read);
+    if (bytes_read != sizeof(*v1)) { free(v1); return false; }
+    const bool ok = loadV1((const uint8_t *)v1, bytes_read);
+    free(v1);
+    return ok;
   }
 
   if (header.version == 2) {
-    PersistedMqttConfigV2 v2;
-    size_t bytes_read = file.read((uint8_t *)&v2, sizeof(v2));
+    PersistedMqttConfigV2 *v2 = (PersistedMqttConfigV2 *)malloc(sizeof(PersistedMqttConfigV2));
+    if (v2 == nullptr) { file.close(); return false; }
+    size_t bytes_read = file.read((uint8_t *)v2, sizeof(*v2));
     file.close();
-    if (bytes_read != sizeof(v2)) return false;
-    return loadV2((const uint8_t *)&v2, bytes_read);
+    if (bytes_read != sizeof(*v2)) { free(v2); return false; }
+    const bool ok = loadV2((const uint8_t *)v2, bytes_read);
+    free(v2);
+    return ok;
   }
 
   if (header.version == 3) {
-    PersistedMqttConfigV3 v3;
-    size_t bytes_read = file.read((uint8_t *)&v3, sizeof(v3));
+    PersistedMqttConfigV3 *v3 = (PersistedMqttConfigV3 *)malloc(sizeof(PersistedMqttConfigV3));
+    if (v3 == nullptr) { file.close(); return false; }
+    size_t bytes_read = file.read((uint8_t *)v3, sizeof(*v3));
     file.close();
-    if (bytes_read != sizeof(v3)) return false;
+    if (bytes_read != sizeof(*v3)) { free(v3); return false; }
 
-    _shared = v3.shared;
+    _shared = v3->shared;
     sanitizeShared(_shared);
     for (int i = 0; i < MQTT_MAX_BROKERS; i++) {
-      const MqttBrokerConfigV3 &src = v3.brokers[i];
+      const MqttBrokerConfigV3 &src = v3->brokers[i];
       MqttBrokerConfig &dst = _brokers[i];
       StrHelper::strncpy(dst.uri, src.uri, sizeof(dst.uri));
       StrHelper::strncpy(dst.username, src.username, sizeof(dst.username));
@@ -186,23 +196,31 @@ bool MqttSettingsStore::loadPath(const char *path) {
       dst.neighbor_interval_secs = MQTT_NEIGHBOR_INTERVAL_SECS;
       sanitizeBroker(_brokers[i]);
     }
+    free(v3);
     save();
     Serial.println("MQTT settings: migrated v3 -> v4");
     return true;
   }
 
   if (header.version == CONFIG_VERSION) {
-    PersistedMqttConfigV4 v4;
-    size_t bytes_read = file.read((uint8_t *)&v4, sizeof(v4));
-    file.close();
-    if (bytes_read != sizeof(v4)) return false;
+    // Read the current layout field-by-field into the members. Serializing
+    // through the members (never a full-image stack copy) is what keeps this
+    // path inside the 8 KB loopTask stack.
+    struct V4Header { uint32_t magic; uint16_t version; uint8_t broker_count; uint8_t reserved; };
+    V4Header full_header;
+    size_t bytes_read = file.read((uint8_t *)&full_header, sizeof(full_header));
+    if (bytes_read != sizeof(full_header)) { file.close(); return false; }
 
-    _shared = v4.shared;
+    bytes_read = file.read((uint8_t *)&_shared, sizeof(_shared));
+    if (bytes_read != sizeof(_shared)) { file.close(); return false; }
     sanitizeShared(_shared);
+
     for (int i = 0; i < MQTT_MAX_BROKERS; i++) {
-      _brokers[i] = v4.brokers[i];
+      bytes_read = file.read((uint8_t *)&_brokers[i], sizeof(_brokers[i]));
+      if (bytes_read != sizeof(_brokers[i])) { file.close(); return false; }
       sanitizeBroker(_brokers[i]);
     }
+    file.close();
     return true;
   }
 
@@ -279,39 +297,69 @@ bool MqttSettingsStore::saveBootCount() {
 bool MqttSettingsStore::saveConfigFile() {
   if (_fs == nullptr) return false;
 
-  PersistedMqttConfigV4 v4 = {};
-  v4.magic = CONFIG_MAGIC;
-  v4.version = CONFIG_VERSION;
-  v4.broker_count = (uint8_t)brokerCount();
-  v4.reserved = 0;
-  v4.shared = _shared;
-  sanitizeShared(v4.shared);
-  for (int i = 0; i < MQTT_MAX_BROKERS; i++) {
-    v4.brokers[i] = _brokers[i];
-    sanitizeBroker(v4.brokers[i]);
-  }
+  // Pin the on-disk layout this function must serialize byte-identically.
+  static_assert(sizeof(MqttSharedConfig) == 256, "settings layout drift");
+  static_assert(sizeof(MqttBrokerConfig) == 536, "settings layout drift");
+  static_assert(sizeof(PersistedMqttConfigV4) == 8 + sizeof(MqttSharedConfig) + MQTT_MAX_BROKERS * sizeof(MqttBrokerConfig),
+                "settings file layout drift");
+
+  // Serialize piece-by-piece. Composing the full ~3.4 KB V4 image on the
+  // stack overflowed the 8 KB loopTask stack and rebooted the node on every
+  // `set` (decoded: Stack canary watchpoint, saveConfigFile -> loopTask).
+  struct V4Header { uint32_t magic; uint16_t version; uint8_t broker_count; uint8_t reserved; };
+  V4Header header;
+  header.magic = CONFIG_MAGIC;
+  header.version = CONFIG_VERSION;
+  header.broker_count = (uint8_t)brokerCount();
+  header.reserved = 0;
 
   _fs->remove(CONFIG_TEMP_PATH);
   File file = _fs->open(CONFIG_TEMP_PATH, "w");
   if (!file) return false;
-  size_t bytes_written = file.write((const uint8_t *)&v4, sizeof(v4));
+  bool write_ok = file.write((const uint8_t *)&header, sizeof(header)) == sizeof(header);
+  if (write_ok) {
+    MqttSharedConfig shared = _shared;
+    sanitizeShared(shared);
+    write_ok = file.write((const uint8_t *)&shared, sizeof(shared)) == sizeof(shared);
+  }
+  for (int i = 0; i < MQTT_MAX_BROKERS && write_ok; i++) {
+    MqttBrokerConfig broker = _brokers[i];
+    sanitizeBroker(broker);
+    write_ok = file.write((const uint8_t *)&broker, sizeof(broker)) == sizeof(broker);
+  }
   file.close();
-  if (bytes_written != sizeof(v4)) {
+  if (!write_ok) {
     _fs->remove(CONFIG_TEMP_PATH);
     return false;
   }
 
-  // Read the temporary file back before it can replace the last-known-good file.
-  PersistedMqttConfigV4 verified = {};
+  // Read the temporary file back, piece-by-piece, before it can replace the
+  // last-known-good file.
   file = _fs->open(CONFIG_TEMP_PATH, "r");
   if (!file) {
     _fs->remove(CONFIG_TEMP_PATH);
     return false;
   }
-  size_t bytes_read = file.read((uint8_t *)&verified, sizeof(verified));
+  bool read_ok = true;
+  V4Header read_header;
+  read_ok = file.read((uint8_t *)&read_header, sizeof(read_header)) == sizeof(read_header) &&
+            read_header.magic == CONFIG_MAGIC && read_header.version == CONFIG_VERSION;
+  if (read_ok) {
+    MqttSharedConfig shared = _shared;
+    sanitizeShared(shared);
+    MqttSharedConfig read_shared;
+    read_ok = file.read((uint8_t *)&read_shared, sizeof(read_shared)) == sizeof(read_shared) &&
+              memcmp(&read_shared, &shared, sizeof(shared)) == 0;
+    for (int i = 0; i < MQTT_MAX_BROKERS && read_ok; i++) {
+      MqttBrokerConfig broker = _brokers[i];
+      sanitizeBroker(broker);
+      MqttBrokerConfig read_broker;
+      read_ok = file.read((uint8_t *)&read_broker, sizeof(read_broker)) == sizeof(read_broker) &&
+                memcmp(&read_broker, &broker, sizeof(broker)) == 0;
+    }
+  }
   file.close();
-  if (bytes_read != sizeof(verified) || verified.magic != CONFIG_MAGIC ||
-      verified.version != CONFIG_VERSION) {
+  if (!read_ok) {
     _fs->remove(CONFIG_TEMP_PATH);
     return false;
   }
@@ -338,24 +386,34 @@ bool MqttSettingsStore::saveConfigFile() {
 }
 
 uint32_t MqttSettingsStore::configCrc32() const {
-  PersistedMqttConfigV4 v4 = {};
-  v4.magic = CONFIG_MAGIC;
-  v4.version = CONFIG_VERSION;
-  v4.broker_count = (uint8_t)brokerCount();
-  v4.shared = _shared;
-  sanitizeShared(v4.shared);
-  for (int i = 0; i < MQTT_MAX_BROKERS; i++) {
-    v4.brokers[i] = _brokers[i];
-    sanitizeBroker(v4.brokers[i]);
-  }
+  // Same bytes in the same order as the old whole-image CRC: header, shared,
+  // then each broker — just composed piecewise so nothing multi-KB is ever
+  // placed on the stack.
+  struct V4Header { uint32_t magic; uint16_t version; uint8_t broker_count; uint8_t reserved; };
+  V4Header header;
+  header.magic = CONFIG_MAGIC;
+  header.version = CONFIG_VERSION;
+  header.broker_count = (uint8_t)brokerCount();
+  header.reserved = 0;
 
-  const uint8_t *bytes = reinterpret_cast<const uint8_t *>(&v4);
   uint32_t crc = 0xFFFFFFFFUL;
-  for (size_t i = 0; i < sizeof(v4); i++) {
-    crc ^= bytes[i];
-    for (uint8_t bit = 0; bit < 8; bit++) {
-      crc = (crc >> 1) ^ (0xEDB88320UL & (0UL - (crc & 1UL)));
+  auto update = [&crc](const uint8_t *bytes, size_t len) {
+    for (size_t i = 0; i < len; i++) {
+      crc ^= bytes[i];
+      for (uint8_t bit = 0; bit < 8; bit++) {
+        crc = (crc >> 1) ^ (0xEDB88320UL & (0UL - (crc & 1UL)));
+      }
     }
+  };
+
+  update(reinterpret_cast<const uint8_t *>(&header), sizeof(header));
+  MqttSharedConfig shared = _shared;
+  sanitizeShared(shared);
+  update(reinterpret_cast<const uint8_t *>(&shared), sizeof(shared));
+  for (int i = 0; i < MQTT_MAX_BROKERS; i++) {
+    MqttBrokerConfig broker = _brokers[i];
+    sanitizeBroker(broker);
+    update(reinterpret_cast<const uint8_t *>(&broker), sizeof(broker));
   }
   return ~crc;
 }

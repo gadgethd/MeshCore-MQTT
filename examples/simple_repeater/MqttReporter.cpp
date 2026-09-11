@@ -1346,10 +1346,15 @@ bool MqttReporter::getConfigValue(const char *key, char *dest, size_t dest_size,
 }
 
 bool MqttReporter::setConfigValue(const char *key, const char *value) {
-  MqttSettingsStore previous = _settings;
   if (!_settings.setValue(key, value)) return false;
   if (!_settings.save()) {
-    _settings = previous;
+    // Not persisted — restore the last known-good configuration from disk.
+    // (A full-store in-memory rollback copy is ~3.4 KB and, together with
+    // the serializer's own frames, overflowed the 8 KB loopTask stack.)
+    _settings.load();
+    _config_crc32 = _settings.configCrc32();
+    _identity_strings_dirty = true;
+    ensureIdentityStrings();
     return false;
   }
   _config_crc32 = _settings.configCrc32();
@@ -1359,10 +1364,12 @@ bool MqttReporter::setConfigValue(const char *key, const char *value) {
 }
 
 bool MqttReporter::resetConfig() {
-  MqttSettingsStore previous = _settings;
   _settings.resetToDefaults();
   if (!_settings.save()) {
-    _settings = previous;
+    _settings.load();
+    _config_crc32 = _settings.configCrc32();
+    _identity_strings_dirty = true;
+    ensureIdentityStrings();
     return false;
   }
   _config_crc32 = _settings.configCrc32();
