@@ -155,3 +155,22 @@ show mqtt stats
 ```
 
 Use this when verifying a flashed device before deployment.
+
+## Reconnect policy (MQTT)
+
+`esp-mqtt` auto-reconnect is disabled in this fork. The reporter loop schedules every
+connect attempt through a shared policy (`src/helpers/MqttReconnectPolicy.h`):
+
+- Ladder backoff after a failure: 10 s, 30 s, 60 s, 120 s, then 300 s.
+- Stability gate: the ladder resets only after the connection stayed up for
+  2 minutes; connections that flap keep their accumulated backoff.
+- Circuit breaker: after 3 consecutive failures at the 300 s rung the slot stops
+  fast retries and is probed once every 30 minutes. A successful connect clears
+  the breaker; the ladder still needs the stability gate to reset.
+- Per-slot stagger: slot N's first connect attempt at boot is delayed by N x 3 s
+  so multiple brokers never connect at the same instant.
+- `mqtt reconnect [N]` resets the slot's policy and retries immediately;
+  disabling and re-enabling a broker also starts fresh.
+- Counters: `show mqtt stats[.N]` prints `reconnect.rung`, `reconnect.breaker`
+  and `reconnect.next_in_ms`; the periodic status stats payload carries
+  `reconnect_rung`, `reconnect_breaker` and `reconnect_next_in_ms`.
