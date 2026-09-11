@@ -12,6 +12,18 @@
 #include <SPIFFS.h>
 #include <math.h>
 
+// Strict NTP acceptance needs the SNTP sync-status API; it is part of the
+// IDF 4.4 lwip apps headers. Fall back to the epoch-only check if absent.
+#if defined(__has_include)
+#if __has_include(<esp_sntp.h>)
+#include <esp_sntp.h>
+#define MQTT_HAVE_SNTP_STATUS 1
+#elif __has_include(<lwip/apps/esp_sntp.h>)
+#include <lwip/apps/esp_sntp.h>
+#define MQTT_HAVE_SNTP_STATUS 1
+#endif
+#endif
+
 #if defined(CONFIG_IDF_TARGET_ESP32S3) && defined(__has_include)
 #if __has_include(<driver/temperature_sensor.h>)
 #include <driver/temperature_sensor.h>
@@ -32,6 +44,25 @@ namespace {
 constexpr unsigned long MQTT_DEBUG_STATS_INTERVAL_MS = 60000UL;
 constexpr unsigned long MQTT_NTP_RETRY_INTERVAL_MS = 30000UL;
 constexpr unsigned long MQTT_NTP_TIMEOUT_MS = 10000UL;
+constexpr unsigned long MQTT_NTP_RETRY_MAX_MS = 300000UL;
+
+// NTP retry backoff: 30 s, 60 s, 120 s, 240 s (capped), by consecutive failures.
+// (Not constexpr: the statement body is not allowed under the ESP toolchain's
+// gnu++11 mode.)
+inline unsigned long ntpRetryDelayMs(uint8_t failures) {
+  const uint8_t shift = failures > 3 ? 3 : failures;
+  unsigned long delay = MQTT_NTP_RETRY_INTERVAL_MS << shift;
+  return delay > MQTT_NTP_RETRY_MAX_MS ? MQTT_NTP_RETRY_MAX_MS : delay;
+}
+
+// Cap on esp-mqtt's outgoing message queue (QoS0 publishes). If the uplink
+// stalls the outbox grows without bound and can starve the heap; QoS0 is
+// lossy by contract, so drop new publishes once the high-water mark is hit.
+#if defined(BOARD_HAS_PSRAM)
+constexpr int MQTT_OUTBOX_HIGH_WATER = 16 * 1024;
+#else
+constexpr int MQTT_OUTBOX_HIGH_WATER = 8 * 1024;
+#endif
 constexpr uint32_t MQTT_CONNECT_RETRY_MAX_MS = 300000UL;
 constexpr time_t MQTT_VALID_EPOCH = 1700000000;
 
@@ -175,6 +206,7 @@ MqttReporter::MqttReporter(MyMesh &mesh, mesh::RTCClock &clock)
   _last_ntp_attempt = 0;
   _ntp_attempted = false;
   _ntp_sync_started_at = 0;
+  _ntp_failures = 0;
   _ntp_sync_pending = false;
   _time_synced = false;
   _ntp_synced_at_ms = 0;
@@ -238,6 +270,7 @@ MqttReporter::MqttReporter(MyMesh &mesh, mesh::RTCClock &clock)
     _clients[i].session_packet_publish_count = 0;
     _clients[i].publish_failures = 0;
     _clients[i].queue_drops = 0;
+    _clients[i].outbox_drops = 0;
     memset(_clients[i].reconnect_attempt_ms, 0, sizeof(_clients[i].reconnect_attempt_ms));
     _clients[i].reconnect_attempt_head = 0;
     _clients[i].reconnect_attempt_count = 0;
@@ -353,7 +386,7 @@ void MqttReporter::loop() {
   if (!_time_synced && mqtt_reporting_enabled) {
     checkNtpSyncComplete();
     if (!_time_synced && !_ntp_sync_pending &&
-        (!_ntp_attempted || (uint32_t)(now - _last_ntp_attempt) >= MQTT_NTP_RETRY_INTERVAL_MS)) {
+        (!_ntp_attempted || (uint32_t)(now - _last_ntp_attempt) >= ntpRetryDelayMs(_ntp_failures))) {
       _last_ntp_attempt = now;
       _ntp_attempted = true;
       syncTimeFromNtp();
@@ -733,6 +766,15 @@ bool MqttReporter::connectMQTT(int idx) {
 }
 
 void MqttReporter::syncTimeFromNtp() {
+  // Resolve the server first: a name that does not resolve burns a full sync
+  // window and points at a configuration problem, not a transient.
+  IPAddress resolved;
+  if (!WiFi.hostByName(MQTT_NTP_SERVER, resolved)) {
+    if (_ntp_failures < UINT8_MAX) _ntp_failures++;
+    Serial.printf("MQTT reporter: NTP server '%s' did not resolve; retry in %lu ms\n",
+                  MQTT_NTP_SERVER, ntpRetryDelayMs(_ntp_failures));
+    return;
+  }
   configTime(0, 0, MQTT_NTP_SERVER);
   _ntp_sync_started_at = millis();
   _ntp_sync_pending = true;
@@ -741,11 +783,20 @@ void MqttReporter::syncTimeFromNtp() {
 
 void MqttReporter::checkNtpSyncComplete() {
   time_t now = time(nullptr);
-  if (now >= MQTT_VALID_EPOCH) {
+#ifdef MQTT_HAVE_SNTP_STATUS
+  // Strict acceptance: only trust a time that came back from a completed
+  // SNTP exchange with our configured server ("status API"), not merely
+  // "some clock value appeared".
+  const bool sync_completed = (esp_sntp_get_sync_status() == SNTP_SYNC_STATUS_COMPLETED);
+#else
+  const bool sync_completed = true;  // fall back to the epoch check
+#endif
+  if (sync_completed && now >= MQTT_VALID_EPOCH) {
     _clock->setCurrentTime((uint32_t)now);
     _time_synced = true;
     _ntp_synced_at_ms = millis();
     _ntp_sync_pending = false;
+    _ntp_failures = 0;
     Serial.println("MQTT reporter: NTP sync complete");
     return;
   }
@@ -753,7 +804,9 @@ void MqttReporter::checkNtpSyncComplete() {
   if (_ntp_sync_pending &&
       (uint32_t)(millis() - _ntp_sync_started_at) >= MQTT_NTP_TIMEOUT_MS) {
     _ntp_sync_pending = false;
-    Serial.println("MQTT reporter: NTP sync timed out; will retry");
+    if (_ntp_failures < UINT8_MAX) _ntp_failures++;
+    Serial.printf("MQTT reporter: NTP sync timed out; retry in %lu ms\n",
+                  ntpRetryDelayMs(_ntp_failures));
   }
 }
 
@@ -820,7 +873,9 @@ void MqttReporter::drainPublishQueue(int idx, uint8_t max_publishes) {
     PublishEntry &entry = bc.publish_queue[bc.queue_head];
     bool was_status = entry.is_status;
     int message_id = -1;
-    if (entry.pending) {
+    const bool outbox_full =
+        esp_mqtt_client_get_outbox_size(bc.client) >= MQTT_OUTBOX_HIGH_WATER;
+    if (entry.pending && !outbox_full) {
       message_id = esp_mqtt_client_publish(
           bc.client,
           entry.topic.c_str(),
@@ -830,7 +885,13 @@ void MqttReporter::drainPublishQueue(int idx, uint8_t max_publishes) {
           entry.retain);
     }
 
-    if (message_id < 0) {
+    if (outbox_full) {
+      bc.outbox_drops++;
+      if (bc.outbox_drops == 1 || (bc.outbox_drops % 32) == 0) {
+        Serial.printf("MQTT reporter: broker %d outbox full (>= %d bytes); dropping QoS0 publishes (total %lu)\n",
+                      idx + 1, MQTT_OUTBOX_HIGH_WATER, (unsigned long)bc.outbox_drops);
+      }
+    } else if (message_id < 0) {
       bc.publish_failures++;
     } else if (was_status) {
       bc.status_publish_count++;
@@ -1303,6 +1364,7 @@ String MqttReporter::buildStatusStatsPayload(int broker_idx) const {
     stats += ",\"publish_failures\":" + String(bc.publish_failures);
     stats += ",\"publish_queue_depth\":" + String(bc.queue_count);
     stats += ",\"publish_queue_drops\":" + String(bc.queue_drops);
+    stats += ",\"publish_outbox_drops\":" + String(bc.outbox_drops);
     stats += ",\"connected\":" + String(bc.connected ? "true" : "false");
     stats += ",\"uptime_ms\":" + String(bc.connected_since_ms != 0 ? (now_ms - bc.connected_since_ms) : 0);
     stats += ",\"neighbor_interval_s\":" + String(broker.neighbor_interval_secs);
@@ -1549,6 +1611,8 @@ void MqttReporter::printBrokerStats(Print &out, int idx) const {
   snprintf(line, sizeof(line), "    publish.queue_depth=%u", (unsigned int)bc.queue_count);
   out.println(line);
   snprintf(line, sizeof(line), "    publish.queue_drops=%lu", (unsigned long)bc.queue_drops);
+  out.println(line);
+  snprintf(line, sizeof(line), "    publish.outbox_drops=%lu", (unsigned long)bc.outbox_drops);
   out.println(line);
   snprintf(line, sizeof(line), "    connected=%s", bc.connected ? "yes" : "no");
   out.println(line);
