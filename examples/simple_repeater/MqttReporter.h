@@ -119,6 +119,7 @@ private:
     uint32_t session_packet_publish_count;
     uint32_t publish_failures;
     uint32_t queue_drops;
+    uint32_t outbox_drops;
     uint32_t reconnect_attempt_ms[MQTT_RECONNECT_RING_SIZE];
     uint8_t reconnect_attempt_head;
     uint8_t reconnect_attempt_count;
@@ -178,6 +179,7 @@ private:
   bool _ntp_sync_pending;
   bool _time_synced;
   unsigned long _ntp_synced_at_ms;
+  uint8_t _ntp_failures;
   char _origin_id[65];
   char _client_id[40];
   char _reset_reason[20];
