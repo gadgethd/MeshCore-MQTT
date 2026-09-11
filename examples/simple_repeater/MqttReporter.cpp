@@ -32,7 +32,6 @@ namespace {
 constexpr unsigned long MQTT_DEBUG_STATS_INTERVAL_MS = 60000UL;
 constexpr unsigned long MQTT_NTP_RETRY_INTERVAL_MS = 30000UL;
 constexpr unsigned long MQTT_NTP_TIMEOUT_MS = 10000UL;
-constexpr uint32_t MQTT_CONNECT_RETRY_BASE_MS = 5000UL;
 constexpr uint32_t MQTT_CONNECT_RETRY_MAX_MS = 300000UL;
 constexpr time_t MQTT_VALID_EPOCH = 1700000000;
 
@@ -243,6 +242,8 @@ MqttReporter::MqttReporter(MyMesh &mesh, mesh::RTCClock &clock)
     _clients[i].reconnect_attempt_head = 0;
     _clients[i].reconnect_attempt_count = 0;
     _clients[i].last_offline_epoch = 0;
+    mqtt_reconnect::reset(_clients[i].recon);
+    _clients[i].recon_seeded = false;
     for (uint8_t q = 0; q < MQTT_PUBLISH_QUEUE_SIZE; q++) {
       _clients[i].publish_queue[q].qos = 0;
       _clients[i].publish_queue[q].retain = false;
@@ -359,14 +360,10 @@ void MqttReporter::loop() {
     }
   }
 
-  // Connect/maintain all enabled brokers
-  for (int i = 0; i < MQTT_MAX_BROKERS; i++) {
-    const MqttBrokerConfig &b = _settings.broker(i);
-    if (!b.enabled || b.uri[0] == '\0') continue;
-    if (!_clients[i].started) {
-      connectMQTT(i);
-    }
-  }
+  // Connect/maintain all enabled brokers. Reconnects are scheduled here
+  // through MqttReconnectPolicy (ladder backoff, stability gate, circuit
+  // breaker, per-slot stagger); esp-mqtt's internal retry loop is disabled.
+  processBrokerReconnects((uint32_t)now);
 
   // Periodic status for connected brokers
   for (int i = 0; i < MQTT_MAX_BROKERS; i++) {
@@ -540,6 +537,10 @@ void MqttReporter::resetBrokerConnection(int idx) {
   bc.connected = false;
   bc.online_status_pending = false;
   bc.next_connect_attempt_ms = 0;
+  // Deliberate reset (mqtt reconnect / config reset): retry immediately with
+  // a fresh ladder; no boot-style stagger for this slot.
+  mqtt_reconnect::reset(bc.recon);
+  bc.recon_seeded = true;
 }
 
 void MqttReporter::resetAllConnections() {
@@ -580,6 +581,60 @@ bool MqttReporter::connectWiFi() {
   return false;
 }
 
+void MqttReporter::processBrokerReconnects(uint32_t now_ms) {
+  for (int i = 0; i < MQTT_MAX_BROKERS; i++) {
+    const MqttBrokerConfig &b = _settings.broker(i);
+    BrokerClient &bc = _clients[i];
+    if (!b.enabled || b.uri[0] == '\0') {
+      if (bc.recon_seeded) {
+        // Disabled: drop any pending schedule so a re-enable starts fresh.
+        mqtt_reconnect::reset(bc.recon);
+        bc.recon_seeded = false;
+      }
+      continue;
+    }
+    if (!bc.recon_seeded) {
+      mqtt_reconnect::seedInitial(bc.recon, now_ms, (uint8_t)i);
+      bc.recon_seeded = true;
+    }
+    mqtt_reconnect::onTick(bc.recon, now_ms);
+
+    if (!bc.started) {
+      if (mqtt_reconnect::attemptDue(bc.recon, now_ms)) {
+        connectMQTT(i);
+      }
+      continue;
+    }
+
+    if (!bc.connected && bc.client != nullptr && mqtt_reconnect::attemptDue(bc.recon, now_ms)) {
+      bc.connect_attempts++;
+      recordReconnectAttempt(bc, now_ms);
+      bc.recon.attempt_pending = false;
+      bc.recon.attempt_in_flight = true;
+      Serial.printf("MQTT reporter: broker %d reconnect attempt (rung %u%s)\n",
+                    i + 1, (unsigned int)bc.recon.rung,
+                    bc.recon.breaker ? ", breaker probe" : "");
+      if (esp_mqtt_client_reconnect(bc.client) != ESP_OK) {
+        // The client only accepts a manual reconnect from its parked
+        // "waiting for reconnect" state; force a stop/start restart if it is
+        // in any other state.
+        Serial.printf("MQTT reporter: broker %d forced restart (stop/start)\n", i + 1);
+        esp_mqtt_client_stop(bc.client);
+        if (esp_mqtt_client_start(bc.client) != ESP_OK) {
+          Serial.printf("MQTT reporter: broker %d restart failed; rebuilding client\n", i + 1);
+          esp_mqtt_client_destroy(bc.client);
+          bc.client = nullptr;
+          bc.started = false;
+          bc.next_connect_attempt_ms = 0;
+          bc.recon.attempt_in_flight = false;
+          bc.recon.attempt_pending = true;
+          bc.recon.next_attempt_ms = now_ms + 10000UL;
+        }
+      }
+    }
+  }
+}
+
 bool MqttReporter::connectMQTT(int idx) {
   if (idx < 0 || idx >= MQTT_MAX_BROKERS) return false;
   BrokerClient &bc = _clients[idx];
@@ -598,6 +653,8 @@ bool MqttReporter::connectMQTT(int idx) {
   if ((int32_t)(now - bc.next_connect_attempt_ms) < 0) return false;
   bc.connect_attempts++;
   recordReconnectAttempt(bc, now);
+  bc.recon.attempt_pending = false;
+  bc.recon.attempt_in_flight = true;
 
   // A disconnect/error event leaves the old client handle allocated. Dispose of
   // it here, outside the MQTT event callback, before creating its replacement.
@@ -628,7 +685,10 @@ bool MqttReporter::connectMQTT(int idx) {
   mqtt_config.username = broker.username;
   mqtt_config.password = broker.password;
   mqtt_config.keepalive = 60;
-  mqtt_config.disable_auto_reconnect = false;
+  // Reconnects are scheduled by the reporter loop via MqttReconnectPolicy
+  // (ladder backoff + circuit breaker). esp-mqtt's own retry loop used to
+  // re-hammer a down broker every few seconds with no pacing.
+  mqtt_config.disable_auto_reconnect = true;
   // rev3 status payloads (full telemetry + nested mqtt block) are ~1.9 KB and
   // are also used as the LWT, so the CONNECT packet alone can exceed the
   // default 2048-byte buffers. Without this headroom esp-mqtt fails every
@@ -648,11 +708,8 @@ bool MqttReporter::connectMQTT(int idx) {
   bc.client = esp_mqtt_client_init(&mqtt_config);
   if (bc.client == nullptr) {
     bc.connect_start_failures++;
-    uint8_t shift = bc.connect_start_failures > 1 ? (uint8_t)(bc.connect_start_failures - 1) : 0;
-    if (shift > 6) shift = 6;
-    uint32_t retry_delay = MQTT_CONNECT_RETRY_BASE_MS << shift;
-    if (retry_delay > MQTT_CONNECT_RETRY_MAX_MS) retry_delay = MQTT_CONNECT_RETRY_MAX_MS;
-    bc.next_connect_attempt_ms = millis() + retry_delay;
+    mqtt_reconnect::onFailure(bc.recon, millis());
+    bc.next_connect_attempt_ms = 0;
     Serial.printf("MQTT reporter: broker %d esp_mqtt_client_init failed\n", idx + 1);
     return false;
   }
@@ -662,11 +719,8 @@ bool MqttReporter::connectMQTT(int idx) {
   bc.started = true;
   if (esp_mqtt_client_start(bc.client) != ESP_OK) {
     bc.connect_start_failures++;
-    uint8_t shift = bc.connect_start_failures > 1 ? (uint8_t)(bc.connect_start_failures - 1) : 0;
-    if (shift > 6) shift = 6;
-    uint32_t retry_delay = MQTT_CONNECT_RETRY_BASE_MS << shift;
-    if (retry_delay > MQTT_CONNECT_RETRY_MAX_MS) retry_delay = MQTT_CONNECT_RETRY_MAX_MS;
-    bc.next_connect_attempt_ms = millis() + retry_delay;
+    mqtt_reconnect::onFailure(bc.recon, millis());
+    bc.next_connect_attempt_ms = 0;
     Serial.printf("MQTT reporter: broker %d esp_mqtt_client_start failed\n", idx + 1);
     esp_mqtt_client_destroy(bc.client);
     bc.client = nullptr;
@@ -845,6 +899,13 @@ void MqttReporter::processCallbackEvents() {
       _wifi_connected_since_ms = millis();
       _wifi_last_ip = WiFi.localIP().toString();
       Serial.printf("MQTT reporter: WiFi got IP: %s\n", _wifi_last_ip.c_str());
+      // The failure domain changed (network is back): ease accumulated MQTT
+      // backoff so slots re-probe sooner. The breaker still needs a success.
+      for (int i = 0; i < MQTT_MAX_BROKERS; i++) {
+        if (!_clients[i].connected && _clients[i].recon.rung > 1) {
+          _clients[i].recon.rung = 1;
+        }
+      }
       continue;
     }
     handleMqttEvent(event);
@@ -868,6 +929,7 @@ void MqttReporter::handleMqttEvent(const CallbackEvent &event) {
       bc.session_status_publish_count = 0;
       bc.session_packet_publish_count = 0;
       bc.last_neighbors_publish = 0;
+      mqtt_reconnect::onConnected(bc.recon, (uint32_t)millis());
       Serial.printf("MQTT reporter: broker %d connected\n", event.broker_idx + 1);
       break;
     case CallbackEventType::MqttDisconnected:
@@ -880,11 +942,20 @@ void MqttReporter::handleMqttEvent(const CallbackEvent &event) {
       }
       bc.connected = false;
       bc.connected_since_ms = 0;
-      // The esp-mqtt client owns reconnects after start. Keep it alive and
-      // let its event task retry instead of destroying it from the callback.
+      // esp-mqtt auto-reconnect is disabled; the reporter loop retries on the
+      // MqttReconnectPolicy schedule. Keep the client handle alive and count
+      // exactly one ladder step per failed attempt / dropped session.
       bc.started = true;
       bc.online_status_pending = false;
       bc.disconnect_events++;
+      if (bc.recon.attempt_in_flight || bc.recon.session_live) {
+        mqtt_reconnect::onFailure(bc.recon, (uint32_t)millis());
+        Serial.printf("MQTT reporter: broker %d retry in %lu ms (rung %u%s)\n",
+                      event.broker_idx + 1,
+                      (unsigned long)mqtt_reconnect::nextWaitMs(bc.recon, (uint32_t)millis()),
+                      (unsigned int)bc.recon.rung,
+                      bc.recon.breaker ? ", breaker open" : "");
+      }
       break;
     case CallbackEventType::MqttError:
       Serial.printf("MQTT reporter: broker %d error type=%d\n", event.broker_idx + 1,
@@ -1218,6 +1289,9 @@ String MqttReporter::buildStatusStatsPayload(int broker_idx) const {
     stats += ",\"connect_events\":" + String(bc.connect_events);
     stats += ",\"disconnect_events\":" + String(bc.disconnect_events);
     stats += ",\"error_events\":" + String(bc.error_events);
+    stats += ",\"reconnect_rung\":" + String(bc.recon.rung);
+    stats += ",\"reconnect_breaker\":" + String(bc.recon.breaker ? "true" : "false");
+    stats += ",\"reconnect_next_in_ms\":" + String(mqtt_reconnect::nextWaitMs(bc.recon, now_ms));
     String broker_uri = sanitizeBrokerUri(broker.uri);
     stats += ",\"broker_uri\":\"" + jsonEscape(broker_uri.c_str()) + "\"";
     stats += ",\"broker_username\":\"" + jsonEscape(broker.username) + "\"";
@@ -1458,6 +1532,13 @@ void MqttReporter::printBrokerStats(Print &out, int idx) const {
   snprintf(line, sizeof(line), "    disconnect.events=%lu", (unsigned long)bc.disconnect_events);
   out.println(line);
   snprintf(line, sizeof(line), "    error.events=%lu", (unsigned long)bc.error_events);
+  out.println(line);
+  snprintf(line, sizeof(line), "    reconnect.rung=%u", (unsigned int)bc.recon.rung);
+  out.println(line);
+  snprintf(line, sizeof(line), "    reconnect.breaker=%s", bc.recon.breaker ? "yes" : "no");
+  out.println(line);
+  snprintf(line, sizeof(line), "    reconnect.next_in_ms=%lu",
+           (unsigned long)mqtt_reconnect::nextWaitMs(bc.recon, (uint32_t)millis()));
   out.println(line);
   snprintf(line, sizeof(line), "    status.publishes=%lu", (unsigned long)bc.status_publish_count);
   out.println(line);

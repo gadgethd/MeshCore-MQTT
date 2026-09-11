@@ -11,6 +11,7 @@
 #include <freertos/queue.h>
 #include <mqtt_client.h>
 #include "MqttSettings.h"
+#include "helpers/MqttReconnectPolicy.h"
 
 class MyMesh;
 
@@ -122,6 +123,8 @@ private:
     uint8_t reconnect_attempt_head;
     uint8_t reconnect_attempt_count;
     uint32_t last_offline_epoch;
+    mqtt_reconnect::State recon;
+    bool recon_seeded;
   };
 
   struct HeardNodeEntry {
@@ -211,6 +214,7 @@ private:
   void resetAllConnections();
   bool connectWiFi();
   bool connectMQTT(int idx);
+  void processBrokerReconnects(uint32_t now_ms);
   void syncTimeFromNtp();
   void checkNtpSyncComplete();
   void publishStatus(int idx, const char *status);
