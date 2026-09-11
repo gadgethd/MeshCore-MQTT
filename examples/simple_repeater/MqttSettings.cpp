@@ -148,19 +148,23 @@ bool MqttSettingsStore::loadPath(const char *path) {
   File file = _fs->open(path, "r");
   if (!file) return false;
 
-  // Read header first to determine version
-  struct { uint32_t magic; uint16_t version; } header;
-  size_t hdr_read = file.read((uint8_t *)&header, sizeof(header));
+  // Read the header first to determine the stored version (single-sourced
+  // through the codec's classifier).
+  uint8_t hdr_bytes[sizeof(mqtt_prefs::Header)];
+  size_t hdr_read = file.read(hdr_bytes, sizeof(hdr_bytes));
   file.close();
 
-  if (hdr_read < sizeof(header)) return false;
-  if (header.magic != CONFIG_MAGIC) return false;
+  if (hdr_read < sizeof(hdr_bytes)) return false;
+  const mqtt_prefs::Kind kind = mqtt_prefs::classify(hdr_bytes, hdr_read);
+  if (kind == mqtt_prefs::Kind::BadMagic) return false;
+  uint16_t stored_version = 0;
+  for (int i = 0; i < 2; i++) stored_version |= (uint16_t)hdr_bytes[4 + i] << (8 * i);
 
   // Re-read full file
   file = _fs->open(path, "r");
   if (!file) return false;
 
-  if (header.version == 1) {
+  if (kind == mqtt_prefs::Kind::V1) {
     // Legacy layout: read through a heap copy — the legacy structs are
     // hundreds of bytes to multi-KB and must never be placed on the stack
     // (that is exactly the overflow fixed here).
@@ -174,7 +178,7 @@ bool MqttSettingsStore::loadPath(const char *path) {
     return ok;
   }
 
-  if (header.version == 2) {
+  if (kind == mqtt_prefs::Kind::V2) {
     PersistedMqttConfigV2 *v2 = (PersistedMqttConfigV2 *)malloc(sizeof(PersistedMqttConfigV2));
     if (v2 == nullptr) { file.close(); return false; }
     size_t bytes_read = file.read((uint8_t *)v2, sizeof(*v2));
@@ -185,7 +189,7 @@ bool MqttSettingsStore::loadPath(const char *path) {
     return ok;
   }
 
-  if (header.version == 3) {
+  if (kind == mqtt_prefs::Kind::V3) {
     PersistedMqttConfigV3 *v3 = (PersistedMqttConfigV3 *)malloc(sizeof(PersistedMqttConfigV3));
     if (v3 == nullptr) { file.close(); return false; }
     size_t bytes_read = file.read((uint8_t *)v3, sizeof(*v3));
@@ -195,16 +199,7 @@ bool MqttSettingsStore::loadPath(const char *path) {
     _shared = v3->shared;
     sanitizeShared(_shared);
     for (int i = 0; i < MQTT_MAX_BROKERS; i++) {
-      const MqttBrokerConfigV3 &src = v3->brokers[i];
-      MqttBrokerConfig &dst = _brokers[i];
-      StrHelper::strncpy(dst.uri, src.uri, sizeof(dst.uri));
-      StrHelper::strncpy(dst.username, src.username, sizeof(dst.username));
-      StrHelper::strncpy(dst.password, src.password, sizeof(dst.password));
-      StrHelper::strncpy(dst.topic_root, src.topic_root, sizeof(dst.topic_root));
-      StrHelper::strncpy(dst.iata, src.iata, sizeof(dst.iata));
-      dst.retain_status = src.retain_status;
-      dst.enabled = src.enabled;
-      dst.neighbor_interval_secs = MQTT_NEIGHBOR_INTERVAL_SECS;
+      mqtt_prefs::mapBrokerFromV3(v3->brokers[i], _brokers[i], MQTT_NEIGHBOR_INTERVAL_SECS);
       sanitizeBroker(_brokers[i]);
     }
     free(v3);
@@ -213,7 +208,7 @@ bool MqttSettingsStore::loadPath(const char *path) {
     return true;
   }
 
-  if (header.version == CONFIG_VERSION) {
+  if (kind == mqtt_prefs::Kind::V4) {
     // Read the current layout field-by-field into the members. Serializing
     // through the members (never a full-image stack copy) is what keeps this
     // path inside the 8 KB loopTask stack.
@@ -240,7 +235,7 @@ bool MqttSettingsStore::loadPath(const char *path) {
   // cannot clobber the newer configuration; `mqtt reset` clears the hold.
   _prefs_write_hold = true;
   Serial.printf("MQTT settings: config version %u not recognized; leaving file untouched (saves disabled until 'mqtt reset')\n",
-                (unsigned int)header.version);
+                (unsigned int)stored_version);
   file.close();
   return false;
 }
@@ -249,21 +244,11 @@ bool MqttSettingsStore::loadV1(const uint8_t *data, size_t len) {
   if (len < sizeof(PersistedMqttConfigV1)) return false;
   const PersistedMqttConfigV1 *v1 = (const PersistedMqttConfigV1 *)data;
 
-  // Migrate shared fields
-  StrHelper::strncpy(_shared.wifi_ssid, v1->config.wifi_ssid, sizeof(_shared.wifi_ssid));
-  StrHelper::strncpy(_shared.wifi_pwd, v1->config.wifi_pwd, sizeof(_shared.wifi_pwd));
-  StrHelper::strncpy(_shared.model, v1->config.model, sizeof(_shared.model));
-  StrHelper::strncpy(_shared.client_version, v1->config.client_version, sizeof(_shared.client_version));
+  // Migrate through the codec's field mapping (host-tested against fixtures).
+  mqtt_prefs::mapSharedFromV1(*v1, _shared);
   sanitizeShared(_shared);
 
-  // Migrate broker 0 fields
-  StrHelper::strncpy(_brokers[0].uri, v1->config.uri, sizeof(_brokers[0].uri));
-  StrHelper::strncpy(_brokers[0].username, v1->config.username, sizeof(_brokers[0].username));
-  StrHelper::strncpy(_brokers[0].password, v1->config.password, sizeof(_brokers[0].password));
-  StrHelper::strncpy(_brokers[0].topic_root, v1->config.topic_root, sizeof(_brokers[0].topic_root));
-  StrHelper::strncpy(_brokers[0].iata, v1->config.iata, sizeof(_brokers[0].iata));
-  _brokers[0].retain_status = v1->config.retain_status ? 1 : 0;
-  _brokers[0].enabled = 1;
+  mqtt_prefs::mapBrokerFromV1(v1->config, _brokers[0]);
   sanitizeBroker(_brokers[0]);
 
   // Save as v4 format
@@ -280,16 +265,8 @@ bool MqttSettingsStore::loadV2(const uint8_t *data, size_t len) {
   sanitizeShared(_shared);
 
   for (int i = 0; i < MQTT_MAX_BROKERS; i++) {
-    const MqttBrokerConfigV2 &src = v2->brokers[i];
-    MqttBrokerConfig &dst = _brokers[i];
-    StrHelper::strncpy(dst.uri, src.uri, sizeof(dst.uri));
-    StrHelper::strncpy(dst.username, src.username, sizeof(dst.username));
-    StrHelper::strncpy(dst.password, src.password, sizeof(dst.password));
-    StrHelper::strncpy(dst.topic_root, src.topic_root, sizeof(dst.topic_root));
-    StrHelper::strncpy(dst.iata, src.iata, sizeof(dst.iata));
-    dst.retain_status = src.retain_status;
-    dst.enabled = src.enabled;
-    sanitizeBroker(dst);
+    mqtt_prefs::mapBrokerFromV2(v2->brokers[i], _brokers[i]);
+    sanitizeBroker(_brokers[i]);
   }
 
   // Save as v4 format
@@ -421,25 +398,16 @@ uint32_t MqttSettingsStore::configCrc32() const {
   header.reserved = 0;
 
   uint32_t crc = 0xFFFFFFFFUL;
-  auto update = [&crc](const uint8_t *bytes, size_t len) {
-    for (size_t i = 0; i < len; i++) {
-      crc ^= bytes[i];
-      for (uint8_t bit = 0; bit < 8; bit++) {
-        crc = (crc >> 1) ^ (0xEDB88320UL & (0UL - (crc & 1UL)));
-      }
-    }
-  };
-
-  update(reinterpret_cast<const uint8_t *>(&header), sizeof(header));
+  mqtt_prefs::crc32Update(crc, reinterpret_cast<const uint8_t *>(&header), sizeof(header));
   MqttSharedConfig shared = _shared;
   sanitizeShared(shared);
-  update(reinterpret_cast<const uint8_t *>(&shared), sizeof(shared));
+  mqtt_prefs::crc32Update(crc, reinterpret_cast<const uint8_t *>(&shared), sizeof(shared));
   for (int i = 0; i < MQTT_MAX_BROKERS; i++) {
     MqttBrokerConfig broker = _brokers[i];
     sanitizeBroker(broker);
-    update(reinterpret_cast<const uint8_t *>(&broker), sizeof(broker));
+    mqtt_prefs::crc32Update(crc, reinterpret_cast<const uint8_t *>(&broker), sizeof(broker));
   }
-  return ~crc;
+  return mqtt_prefs::crc32Finish(crc);
 }
 
 void MqttSettingsStore::resetToDefaults() {
