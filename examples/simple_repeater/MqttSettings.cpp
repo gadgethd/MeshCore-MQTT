@@ -2,7 +2,7 @@
 
 #if defined(ESP32) && defined(WITH_MQTT_REPORTER)
 
-#include <Preferences.h>
+#include <nvs.h>
 #include <nvs_flash.h>
 #include <helpers/UTF8Helpers.h>
 #include <string.h>
@@ -79,8 +79,8 @@ MqttSettingsStore::MqttSettingsStore() : _fs(nullptr), _boot_count(0) {
 
 // A fully erased (or corrupted) NVS partition must be initialized before the
 // first nvs_open. The Arduino core's initArduino only warns on failure, so a
-// blank partition panics at the first Preferences::begin(). This mirrors the
-// standard ESP-IDF recovery pattern.
+// blank partition panics at the first nvs_open. This mirrors the standard
+// ESP-IDF recovery pattern.
 static void ensureNvsReady() {
   esp_err_t err = nvs_flash_init();
   if (err == ESP_ERR_NVS_NO_FREE_PAGES || err == ESP_ERR_NVS_NEW_VERSION_FOUND) {
@@ -97,10 +97,13 @@ void MqttSettingsStore::begin(FILESYSTEM *fs) {
 
 void MqttSettingsStore::loadBootCount() {
   ensureNvsReady();
-  Preferences prefs;
-  if (prefs.begin("mqtt", true)) {
-    _boot_count = prefs.getUInt("boot_count", 0);
-    prefs.end();
+  nvs_handle_t handle;
+  if (nvs_open("mqtt", NVS_READONLY, &handle) == ESP_OK) {
+    uint32_t value = 0;
+    if (nvs_get_u32(handle, "boot_count", &value) == ESP_OK) {
+      _boot_count = value;
+    }
+    nvs_close(handle);
   }
 }
 
@@ -287,10 +290,13 @@ bool MqttSettingsStore::save() {
 
 bool MqttSettingsStore::saveBootCount() {
   ensureNvsReady();
-  Preferences prefs;
-  if (!prefs.begin("mqtt", false)) return false;
-  bool saved = prefs.putUInt("boot_count", _boot_count) == sizeof(_boot_count);
-  prefs.end();
+  nvs_handle_t handle;
+  if (nvs_open("mqtt", NVS_READWRITE, &handle) != ESP_OK) return false;
+  bool saved = nvs_set_u32(handle, "boot_count", _boot_count) == ESP_OK;
+  if (saved) {
+    saved = nvs_commit(handle) == ESP_OK;
+  }
+  nvs_close(handle);
   return saved;
 }
 
