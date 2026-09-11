@@ -5,6 +5,7 @@
 #include <Arduino.h>
 #include <helpers/IdentityStore.h>
 #include <helpers/TxtDataHelpers.h>
+#include <helpers/MqttPrefsCodec.h>
 
 #ifndef MQTT_IATA
   #define MQTT_IATA "XXX"
@@ -196,38 +197,11 @@
 
 static constexpr int MQTT_MAX_BROKERS = 6;
 
-struct MqttSharedConfig {
-  char wifi_ssid[64];
-  char wifi_pwd[64];
-  char model[64];
-  char client_version[64];
-};
-
-struct MqttBrokerConfig {
-  char uri[128];
-  char username[64];
-  char password[64];
-  char topic_root[256];
-  char iata[16];
-  uint8_t retain_status;
-  uint8_t enabled;
-  uint8_t reserved[2];
-  uint32_t neighbor_interval_secs;
-};
-
-// Legacy struct kept for v1 migration (topic_root was 32 bytes in v1 format)
-struct MqttRuntimeConfig {
-  char wifi_ssid[64];
-  char wifi_pwd[64];
-  char topic_root[32];
-  char uri[128];
-  char username[64];
-  char password[64];
-  char iata[16];
-  char model[64];
-  char client_version[64];
-  uint8_t retain_status;
-};
+// Codec types live in helpers/MqttPrefsCodec.h (pure, host-testable; layouts
+// pinned with static_asserts there). The historical names are kept so all
+// consumers are unchanged.
+using MqttSharedConfig = mqtt_prefs::SharedConfig;
+using MqttBrokerConfig = mqtt_prefs::BrokerConfig;
 
 class MqttSettingsStore {
 public:
@@ -250,63 +224,12 @@ public:
   bool brokerCredentialsAllowed(int idx) const;
 
 private:
-  // v1 persisted format (for migration)
-  struct PersistedMqttConfigV1 {
-    uint32_t magic;
-    uint16_t version;
-    uint16_t reserved;
-    MqttRuntimeConfig config;
-  };
-
-  // v2 persisted format (topic_root was 32 bytes — retained for migration)
-  struct MqttBrokerConfigV2 {
-    char uri[128];
-    char username[64];
-    char password[64];
-    char topic_root[32];
-    char iata[16];
-    uint8_t retain_status;
-    uint8_t enabled;
-    uint8_t reserved[2];
-  };
-  struct PersistedMqttConfigV2 {
-    uint32_t magic;
-    uint16_t version;
-    uint8_t broker_count;
-    uint8_t reserved;
-    MqttSharedConfig shared;
-    MqttBrokerConfigV2 brokers[MQTT_MAX_BROKERS];
-  };
-
-  // v3 persisted format (topic_root is 256 bytes; no neighbor interval)
-  struct MqttBrokerConfigV3 {
-    char uri[128];
-    char username[64];
-    char password[64];
-    char topic_root[256];
-    char iata[16];
-    uint8_t retain_status;
-    uint8_t enabled;
-    uint8_t reserved[2];
-  };
-  struct PersistedMqttConfigV3 {
-    uint32_t magic;
-    uint16_t version;
-    uint8_t broker_count;
-    uint8_t reserved;
-    MqttSharedConfig shared;
-    MqttBrokerConfigV3 brokers[MQTT_MAX_BROKERS];
-  };
-
-  // v4 persisted format (current)
-  struct PersistedMqttConfigV4 {
-    uint32_t magic;
-    uint16_t version;
-    uint8_t broker_count;
-    uint8_t reserved;
-    MqttSharedConfig shared;
-    MqttBrokerConfig brokers[MQTT_MAX_BROKERS];
-  };
+  // Persisted layouts come from the codec (byte-pinned there); aliases keep
+  // the historical names used across the store implementation.
+  using PersistedMqttConfigV1 = mqtt_prefs::LegacyFileV1;
+  using PersistedMqttConfigV2 = mqtt_prefs::LegacyFileV2;
+  using PersistedMqttConfigV3 = mqtt_prefs::LegacyFileV3;
+  using PersistedMqttConfigV4 = mqtt_prefs::FileV4;
 
   FILESYSTEM *_fs;
   MqttSharedConfig _shared;
