@@ -47,6 +47,26 @@ union int32_Float_t
  
 //precision 0-9
 #define PRECISION 7
+
+// ltoa() is not declared by every toolchain we build for (the STM32 CI env
+// fails with "ltoa was not declared in this scope"), so convert by hand.
+static char *_ltoa10(uint32_t v, char *p)
+{
+  char tmp[12];
+  int n = 0;
+
+  do
+  {
+    tmp[n++] = (char)('0' + (v % 10));
+    v /= 10;
+  } while (v != 0);
+
+  while (n > 0)
+  {
+    *p++ = tmp[--n];
+  }
+  return p;
+}
  
 //_ftoa function 
 static void _ftoa(float f, char *p, int *status) 
@@ -102,9 +122,7 @@ static void _ftoa(float f, char *p, int *status)
     *p++ = '0';
   else 
   {
-    ltoa(int_part, p, 10);
-    while (*p)
-      p++;
+    p = _ltoa10((uint32_t)int_part, p);
   }
   *p++ = '.';
   if (frac_part == 0)
