@@ -237,6 +237,7 @@ public:
   bool load();
   bool save();
   void resetToDefaults();
+  void clearWriteHold();
 
   uint32_t bootCount() const { return _boot_count; }
   uint32_t incrementBootCount();
@@ -311,6 +312,7 @@ private:
   MqttSharedConfig _shared;
   MqttBrokerConfig _brokers[MQTT_MAX_BROKERS];
   uint32_t _boot_count;
+  bool _prefs_write_hold;
 
   static constexpr uint32_t CONFIG_MAGIC = 0x4D515454; // MQTT
   static constexpr uint16_t CONFIG_VERSION = 4;

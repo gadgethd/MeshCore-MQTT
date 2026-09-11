@@ -73,7 +73,7 @@ bool validBrokerTopicConfig(const MqttBrokerConfig &cfg) {
 
 } // namespace
 
-MqttSettingsStore::MqttSettingsStore() : _fs(nullptr), _boot_count(0) {
+MqttSettingsStore::MqttSettingsStore() : _fs(nullptr), _boot_count(0), _prefs_write_hold(false) {
   resetToDefaults();
 }
 
@@ -86,6 +86,14 @@ static void ensureNvsReady() {
   if (err == ESP_ERR_NVS_NO_FREE_PAGES || err == ESP_ERR_NVS_NEW_VERSION_FOUND) {
     nvs_flash_erase();
     nvs_flash_init();
+  }
+}
+
+// Remove a file only when it exists: LittleFS/VFS logs an error for removing
+// a missing path, which used to spam the serial log on every settings save.
+static void removeIfExists(FILESYSTEM *fs, const char *path) {
+  if (fs != nullptr && path != nullptr && fs->exists(path)) {
+    fs->remove(path);
   }
 }
 
@@ -227,6 +235,12 @@ bool MqttSettingsStore::loadPath(const char *path) {
     return true;
   }
 
+  // A file written by a newer firmware that this build does not recognize.
+  // Leave it untouched and block saves (write-hold) so a downgraded build
+  // cannot clobber the newer configuration; `mqtt reset` clears the hold.
+  _prefs_write_hold = true;
+  Serial.printf("MQTT settings: config version %u not recognized; leaving file untouched (saves disabled until 'mqtt reset')\n",
+                (unsigned int)header.version);
   file.close();
   return false;
 }
@@ -302,6 +316,10 @@ bool MqttSettingsStore::saveBootCount() {
 
 bool MqttSettingsStore::saveConfigFile() {
   if (_fs == nullptr) return false;
+  if (_prefs_write_hold) {
+    Serial.println("MQTT settings: save blocked (loaded file is from a newer firmware; 'mqtt reset' to adopt this build)");
+    return false;
+  }
 
   // Pin the on-disk layout this function must serialize byte-identically.
   static_assert(sizeof(MqttSharedConfig) == 256, "settings layout drift");
@@ -319,7 +337,7 @@ bool MqttSettingsStore::saveConfigFile() {
   header.broker_count = (uint8_t)brokerCount();
   header.reserved = 0;
 
-  _fs->remove(CONFIG_TEMP_PATH);
+  removeIfExists(_fs, CONFIG_TEMP_PATH);
   File file = _fs->open(CONFIG_TEMP_PATH, "w");
   if (!file) return false;
   bool write_ok = file.write((const uint8_t *)&header, sizeof(header)) == sizeof(header);
@@ -335,7 +353,7 @@ bool MqttSettingsStore::saveConfigFile() {
   }
   file.close();
   if (!write_ok) {
-    _fs->remove(CONFIG_TEMP_PATH);
+    removeIfExists(_fs, CONFIG_TEMP_PATH);
     return false;
   }
 
@@ -343,7 +361,7 @@ bool MqttSettingsStore::saveConfigFile() {
   // last-known-good file.
   file = _fs->open(CONFIG_TEMP_PATH, "r");
   if (!file) {
-    _fs->remove(CONFIG_TEMP_PATH);
+    removeIfExists(_fs, CONFIG_TEMP_PATH);
     return false;
   }
   bool read_ok = true;
@@ -366,25 +384,25 @@ bool MqttSettingsStore::saveConfigFile() {
   }
   file.close();
   if (!read_ok) {
-    _fs->remove(CONFIG_TEMP_PATH);
+    removeIfExists(_fs, CONFIG_TEMP_PATH);
     return false;
   }
 
   const bool had_existing = _fs->exists(CONFIG_PATH);
   if (had_existing) {
-    _fs->remove(CONFIG_BACKUP_PATH);
+    removeIfExists(_fs, CONFIG_BACKUP_PATH);
     if (!_fs->rename(CONFIG_PATH, CONFIG_BACKUP_PATH)) {
-      _fs->remove(CONFIG_TEMP_PATH);
+      removeIfExists(_fs, CONFIG_TEMP_PATH);
       return false;
     }
   }
 
   if (!_fs->rename(CONFIG_TEMP_PATH, CONFIG_PATH)) {
     if (had_existing) {
-      _fs->remove(CONFIG_PATH);
+      removeIfExists(_fs, CONFIG_PATH);
       _fs->rename(CONFIG_BACKUP_PATH, CONFIG_PATH);
     }
-    _fs->remove(CONFIG_TEMP_PATH);
+    removeIfExists(_fs, CONFIG_TEMP_PATH);
     return false;
   }
 
@@ -425,6 +443,8 @@ uint32_t MqttSettingsStore::configCrc32() const {
 }
 
 void MqttSettingsStore::resetToDefaults() {
+  // Note: does not clear the write-hold - only an explicit `mqtt reset`
+  // (clearWriteHold()) drops it, so a downgrade cannot clobber a newer file.
   memset(&_shared, 0, sizeof(_shared));
   memset(_brokers, 0, sizeof(_brokers));
 
@@ -489,6 +509,14 @@ void MqttSettingsStore::resetToDefaults() {
 
   for (int i = 0; i < MQTT_MAX_BROKERS; i++) {
     sanitizeBroker(_brokers[i]);
+  }
+}
+
+
+void MqttSettingsStore::clearWriteHold() {
+  if (_prefs_write_hold) {
+    _prefs_write_hold = false;
+    Serial.println("MQTT settings: write hold cleared");
   }
 }
 
