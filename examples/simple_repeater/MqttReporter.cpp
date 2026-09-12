@@ -243,6 +243,10 @@ MqttReporter::MqttReporter(MyMesh &mesh, mesh::RTCClock &clock)
   _wifi_last_ip = "";
   _identity_strings_dirty = true;
   _callback_queue = nullptr;
+  mqtt_reconnect::resetGuard(_reconnect_guard);
+  _pending_wifi_event.store(0, std::memory_order_relaxed);
+  _pending_wifi_disconnect_reason.store(-1, std::memory_order_relaxed);
+  _wifi_callback_queue_drops.store(0, std::memory_order_relaxed);
   _last_cpu_sample_ms = 0;
   _idle_pct_core0 = -1.0f;
   _idle_pct_core1 = -1.0f;
@@ -254,6 +258,10 @@ MqttReporter::MqttReporter(MyMesh &mesh, mesh::RTCClock &clock)
 
   for (int i = 0; i < MQTT_MAX_BROKERS; i++) {
     _clients[i].client = nullptr;
+    _clients[i].client_generation.store(0, std::memory_order_relaxed);
+    _clients[i].pending_connected_generation.store(0, std::memory_order_relaxed);
+    _clients[i].pending_terminal_generation.store(0, std::memory_order_relaxed);
+    _clients[i].callback_queue_drops.store(0, std::memory_order_relaxed);
     _clients[i].started = false;
     _clients[i].connected_since_ms = 0;
     _clients[i].connected = false;
@@ -297,6 +305,7 @@ MqttReporter::MqttReporter(MyMesh &mesh, mesh::RTCClock &clock)
     }
     _event_ctx[i].reporter = this;
     _event_ctx[i].broker_idx = i;
+    _event_ctx[i].generation = 0;
   }
 
   // WiFi callbacks are registered in begin(), after construction is complete.
@@ -327,7 +336,7 @@ void MqttReporter::begin(FILESYSTEM *fs) {
   ensureIdentityStrings();
   _callback_queue = xQueueCreate(MQTT_CALLBACK_QUEUE_DEPTH, sizeof(CallbackEvent));
   if (_callback_queue == nullptr) {
-    Serial.println("MQTT reporter: callback queue allocation failed");
+    Serial.println("MQTT reporter: callback queue allocation failed; terminal fallback active");
   }
   esp_log_level_set("MQTT_CLIENT", ESP_LOG_INFO);
   esp_log_level_set("TRANSPORT_BASE", ESP_LOG_INFO);
@@ -341,6 +350,7 @@ void MqttReporter::begin(FILESYSTEM *fs) {
     MqttReporter *self = s_instance.load(std::memory_order_acquire);
     if (self == nullptr) return;
     CallbackEvent callback = {};
+    callback.broker_idx = -1;
     if (event == ARDUINO_EVENT_WIFI_STA_DISCONNECTED) {
       callback.type = CallbackEventType::WifiDisconnected;
       callback.wifi_reason = info.wifi_sta_disconnected.reason;
@@ -374,7 +384,7 @@ void MqttReporter::loop() {
 
   if (WiFi.status() != WL_CONNECTED) {
     for (int i = 0; i < MQTT_MAX_BROKERS; i++) {
-      _clients[i].connected = false;
+      reconcileMqttTerminal(i, (uint32_t)now);
       _clients[i].online_status_pending = false;
       clearPublishQueue(i);
     }
@@ -577,6 +587,8 @@ void MqttReporter::resetBrokerConnection(int idx) {
     esp_mqtt_client_destroy(bc.client);
     bc.client = nullptr;
   }
+  bc.pending_connected_generation.store(0, std::memory_order_release);
+  bc.pending_terminal_generation.store(0, std::memory_order_release);
   clearPublishQueue(idx);
   bc.started = false;
   bc.connected = false;
@@ -592,6 +604,7 @@ void MqttReporter::resetAllConnections() {
   for (int i = 0; i < MQTT_MAX_BROKERS; i++) {
     resetBrokerConnection(i);
   }
+  mqtt_reconnect::resetGuard(_reconnect_guard);
   _last_wifi_attempt = 0;
   _wifi_attempted = false;
   _wifi_consecutive_failures = 0;
@@ -627,6 +640,7 @@ bool MqttReporter::connectWiFi() {
 }
 
 void MqttReporter::processBrokerReconnects(uint32_t now_ms) {
+  bool attempted_this_pass = false;
   for (int i = 0; i < MQTT_MAX_BROKERS; i++) {
     const MqttBrokerConfig &b = _settings.broker(i);
     BrokerClient &bc = _clients[i];
@@ -643,6 +657,14 @@ void MqttReporter::processBrokerReconnects(uint32_t now_ms) {
       bc.recon_seeded = true;
     }
     mqtt_reconnect::onTick(bc.recon, now_ms);
+    if (mqtt_reconnect::reconcileAttemptTimeout(bc.recon, now_ms, (uint8_t)i)) {
+      bc.connected = false;
+      bc.connected_since_ms = 0;
+      bc.online_status_pending = false;
+      Serial.printf("MQTT reporter: broker %d attempt timed out; retry in %lu ms\n",
+                    i + 1,
+                    (unsigned long)mqtt_reconnect::nextWaitMs(bc.recon, now_ms));
+    }
 
     if (!bc.started) {
       // Heap budget: boards without PSRAM only fit so many TLS sessions at
@@ -667,17 +689,22 @@ void MqttReporter::processBrokerReconnects(uint32_t now_ms) {
         continue;
       }
       bc.heap_inactive = false;
-      if (mqtt_reconnect::attemptDue(bc.recon, now_ms)) {
-        connectMQTT(i);
+      if (mqtt_reconnect::attemptDue(bc.recon, now_ms) &&
+          mqtt_reconnect::guardAllowsAttempt(_reconnect_guard, now_ms, attempted_this_pass) &&
+          connectMQTT(i)) {
+        mqtt_reconnect::noteAttempt(_reconnect_guard, now_ms);
+        attempted_this_pass = true;
       }
       continue;
     }
 
-    if (!bc.connected && bc.client != nullptr && mqtt_reconnect::attemptDue(bc.recon, now_ms)) {
+    if (!bc.connected && bc.client != nullptr && mqtt_reconnect::attemptDue(bc.recon, now_ms) &&
+        mqtt_reconnect::guardAllowsAttempt(_reconnect_guard, now_ms, attempted_this_pass)) {
       bc.connect_attempts++;
       recordReconnectAttempt(bc, now_ms);
-      bc.recon.attempt_pending = false;
-      bc.recon.attempt_in_flight = true;
+      mqtt_reconnect::onAttemptStarted(bc.recon, now_ms);
+      mqtt_reconnect::noteAttempt(_reconnect_guard, now_ms);
+      attempted_this_pass = true;
       Serial.printf("MQTT reporter: broker %d reconnect attempt (rung %u%s)\n",
                     i + 1, (unsigned int)bc.recon.rung,
                     bc.recon.breaker ? ", breaker probe" : "");
@@ -686,16 +713,19 @@ void MqttReporter::processBrokerReconnects(uint32_t now_ms) {
         // "waiting for reconnect" state; force a stop/start restart if it is
         // in any other state.
         Serial.printf("MQTT reporter: broker %d forced restart (stop/start)\n", i + 1);
-        esp_mqtt_client_stop(bc.client);
-        if (esp_mqtt_client_start(bc.client) != ESP_OK) {
+        esp_err_t stop_result = esp_mqtt_client_stop(bc.client);
+        if (stop_result != ESP_OK) {
+          Serial.printf("MQTT reporter: broker %d stop failed (%d)\n", i + 1, (int)stop_result);
+          reconcileMqttTerminal(i, now_ms);
+        } else if (esp_mqtt_client_start(bc.client) != ESP_OK) {
           Serial.printf("MQTT reporter: broker %d restart failed; rebuilding client\n", i + 1);
           esp_mqtt_client_destroy(bc.client);
           bc.client = nullptr;
           bc.started = false;
           bc.next_connect_attempt_ms = 0;
-          bc.recon.attempt_in_flight = false;
-          bc.recon.attempt_pending = true;
-          bc.recon.next_attempt_ms = now_ms + 10000UL;
+          bc.pending_connected_generation.store(0, std::memory_order_release);
+          bc.pending_terminal_generation.store(0, std::memory_order_release);
+          reconcileMqttTerminal(i, now_ms);
         }
       }
     }
@@ -720,8 +750,7 @@ bool MqttReporter::connectMQTT(int idx) {
   if ((int32_t)(now - bc.next_connect_attempt_ms) < 0) return false;
   bc.connect_attempts++;
   recordReconnectAttempt(bc, now);
-  bc.recon.attempt_pending = false;
-  bc.recon.attempt_in_flight = true;
+  mqtt_reconnect::onAttemptStarted(bc.recon, now);
 
   // A disconnect/error event leaves the old client handle allocated. Dispose of
   // it here, outside the MQTT event callback, before creating its replacement.
@@ -730,6 +759,8 @@ bool MqttReporter::connectMQTT(int idx) {
     esp_mqtt_client_destroy(bc.client);
     bc.client = nullptr;
   }
+  bc.pending_connected_generation.store(0, std::memory_order_release);
+  bc.pending_terminal_generation.store(0, std::memory_order_release);
   clearPublishQueue(idx);
   bc.connected = false;
   bc.online_status_pending = false;
@@ -766,6 +797,10 @@ bool MqttReporter::connectMQTT(int idx) {
   mqtt_config.lwt_msg = bc.offline_payload.c_str();
   mqtt_config.lwt_qos = 0;
   mqtt_config.lwt_retain = broker.retain_status != 0;
+  uint32_t generation = mqtt_reconnect::nextGeneration(
+      bc.client_generation.load(std::memory_order_relaxed));
+  bc.client_generation.store(generation, std::memory_order_release);
+  _event_ctx[idx].generation = generation;
   mqtt_config.user_context = &_event_ctx[idx];
   mqtt_config.event_handle = mqttEventHandler;
   if (strncmp(broker.uri, "wss://", 6) == 0 || strncmp(broker.uri, "mqtts://", 8) == 0) {
@@ -775,10 +810,10 @@ bool MqttReporter::connectMQTT(int idx) {
   bc.client = esp_mqtt_client_init(&mqtt_config);
   if (bc.client == nullptr) {
     bc.connect_start_failures++;
-    mqtt_reconnect::onFailure(bc.recon, millis());
+    mqtt_reconnect::onTerminalEvent(bc.recon, millis(), (uint8_t)idx);
     bc.next_connect_attempt_ms = 0;
     Serial.printf("MQTT reporter: broker %d esp_mqtt_client_init failed\n", idx + 1);
-    return false;
+    return true;
   }
 
   // Set before start so a fast disconnect/error callback cannot be overwritten
@@ -786,13 +821,15 @@ bool MqttReporter::connectMQTT(int idx) {
   bc.started = true;
   if (esp_mqtt_client_start(bc.client) != ESP_OK) {
     bc.connect_start_failures++;
-    mqtt_reconnect::onFailure(bc.recon, millis());
+    mqtt_reconnect::onTerminalEvent(bc.recon, millis(), (uint8_t)idx);
     bc.next_connect_attempt_ms = 0;
     Serial.printf("MQTT reporter: broker %d esp_mqtt_client_start failed\n", idx + 1);
     esp_mqtt_client_destroy(bc.client);
     bc.client = nullptr;
+    bc.pending_connected_generation.store(0, std::memory_order_release);
+    bc.pending_terminal_generation.store(0, std::memory_order_release);
     bc.started = false;
-    return false;
+    return true;
   }
 
   Serial.printf("MQTT reporter: broker %d MQTT client started\n", idx + 1);
@@ -972,48 +1009,164 @@ bool MqttReporter::anyBrokerConnected() const {
 }
 
 void MqttReporter::enqueueCallbackEvent(const CallbackEvent &event) {
-  if (_callback_queue == nullptr) return;
-  xQueueSend(_callback_queue, &event, 0);
+  if (_callback_queue != nullptr && xQueueSend(_callback_queue, &event, 0) == pdTRUE) {
+    if (event.type == CallbackEventType::WifiDisconnected ||
+        event.type == CallbackEventType::WifiGotIp) {
+      _pending_wifi_event.store(0, std::memory_order_release);
+    } else if (event.broker_idx >= 0 && event.broker_idx < MQTT_MAX_BROKERS) {
+      BrokerClient &bc = _clients[event.broker_idx];
+      uint32_t active_generation = bc.client_generation.load(std::memory_order_acquire);
+      if (mqtt_reconnect::generationMatches(active_generation, event.generation)) {
+        bc.pending_connected_generation.store(0, std::memory_order_release);
+        bc.pending_terminal_generation.store(0, std::memory_order_release);
+      }
+    }
+    return;
+  }
+
+  bool is_mqtt_event = event.type == CallbackEventType::MqttConnected ||
+                       event.type == CallbackEventType::MqttDisconnected ||
+                       event.type == CallbackEventType::MqttError;
+  if (is_mqtt_event && event.broker_idx >= 0 && event.broker_idx < MQTT_MAX_BROKERS) {
+    BrokerClient &bc = _clients[event.broker_idx];
+    bc.callback_queue_drops.fetch_add(1, std::memory_order_relaxed);
+    uint32_t active_generation = bc.client_generation.load(std::memory_order_acquire);
+    if (!mqtt_reconnect::generationMatches(active_generation, event.generation)) {
+      return;
+    }
+    if (event.type == CallbackEventType::MqttConnected) {
+      bc.pending_terminal_generation.store(0, std::memory_order_release);
+      bc.pending_connected_generation.store(event.generation, std::memory_order_release);
+    } else if ((event.type == CallbackEventType::MqttDisconnected ||
+                event.type == CallbackEventType::MqttError) &&
+               event.generation != 0) {
+      // The owner loop consumes this one-slot fallback even when the queue
+      // could not be allocated. Multiple terminal callbacks may collapse,
+      // which is safe because their policy transition is idempotent.
+      bc.pending_connected_generation.store(0, std::memory_order_release);
+      bc.pending_terminal_generation.store(event.generation, std::memory_order_release);
+    }
+  } else {
+    _wifi_callback_queue_drops.fetch_add(1, std::memory_order_relaxed);
+    if (event.type == CallbackEventType::WifiDisconnected) {
+      _pending_wifi_disconnect_reason.store(event.wifi_reason, std::memory_order_relaxed);
+    }
+    _pending_wifi_event.store((uint8_t)event.type + 1, std::memory_order_release);
+  }
 }
 
 void MqttReporter::processCallbackEvents() {
-  if (_callback_queue == nullptr) return;
-  CallbackEvent event;
-  while (xQueueReceive(_callback_queue, &event, 0) == pdTRUE) {
-    if (event.type == CallbackEventType::WifiDisconnected) {
-      _last_wifi_disconnect_reason = event.wifi_reason;
-      _wifi_got_ip = false;
-      _wifi_connected_since_ms = 0;
-      _wifi_last_ip = "";
-      Serial.printf("MQTT reporter: WiFi disconnected, reason=%d\n",
-                    _last_wifi_disconnect_reason);
-      continue;
-    }
-    if (event.type == CallbackEventType::WifiGotIp) {
-      _wifi_got_ip = true;
-      _wifi_connected_since_ms = millis();
-      _wifi_last_ip = WiFi.localIP().toString();
-      Serial.printf("MQTT reporter: WiFi got IP: %s\n", _wifi_last_ip.c_str());
-      // The failure domain changed (network is back): ease accumulated MQTT
-      // backoff so slots re-probe sooner. The breaker still needs a success.
-      for (int i = 0; i < MQTT_MAX_BROKERS; i++) {
-        if (!_clients[i].connected && _clients[i].recon.rung > 1) {
-          _clients[i].recon.rung = 1;
-        }
+  if (_callback_queue != nullptr) {
+    CallbackEvent event;
+    while (xQueueReceive(_callback_queue, &event, 0) == pdTRUE) {
+      if (event.type == CallbackEventType::WifiDisconnected ||
+          event.type == CallbackEventType::WifiGotIp) {
+        handleWifiEvent(event);
+        continue;
       }
+      handleMqttEvent(event);
+    }
+  }
+
+  uint8_t pending_wifi = _pending_wifi_event.exchange(0, std::memory_order_acq_rel);
+  if (pending_wifi != 0) {
+    CallbackEvent event = {};
+    event.broker_idx = -1;
+    event.type = static_cast<CallbackEventType>(pending_wifi - 1);
+    event.wifi_reason = _pending_wifi_disconnect_reason.load(std::memory_order_relaxed);
+    handleWifiEvent(event);
+  }
+  processPendingTerminalEvents();
+}
+
+void MqttReporter::handleWifiEvent(const CallbackEvent &event) {
+  uint32_t now_ms = (uint32_t)millis();
+  if (event.type == CallbackEventType::WifiDisconnected) {
+    _last_wifi_disconnect_reason = event.wifi_reason;
+    _wifi_got_ip = false;
+    _wifi_connected_since_ms = 0;
+    _wifi_last_ip = "";
+    for (int i = 0; i < MQTT_MAX_BROKERS; i++) {
+      reconcileMqttTerminal(i, now_ms);
+    }
+    Serial.printf("MQTT reporter: WiFi disconnected, reason=%d\n",
+                  _last_wifi_disconnect_reason);
+    return;
+  }
+  if (event.type != CallbackEventType::WifiGotIp) return;
+
+  _wifi_got_ip = true;
+  _wifi_connected_since_ms = now_ms;
+  _wifi_last_ip = WiFi.localIP().toString();
+  Serial.printf("MQTT reporter: WiFi got IP: %s\n", _wifi_last_ip.c_str());
+  // The failure domain changed (network is back): keep cap/breaker
+  // accounting, but replace an obsolete outage deadline with a prompt,
+  // staggered probe.
+  for (int i = 0; i < MQTT_MAX_BROKERS; i++) {
+    const MqttBrokerConfig &broker = _settings.broker(i);
+    if (broker.enabled && broker.uri[0] != '\0' && !_clients[i].connected) {
+      mqtt_reconnect::onWifiRecovered(_clients[i].recon, now_ms, (uint8_t)i);
+      _clients[i].recon_seeded = true;
+    }
+  }
+}
+
+void MqttReporter::processPendingTerminalEvents() {
+  for (int i = 0; i < MQTT_MAX_BROKERS; i++) {
+    BrokerClient &bc = _clients[i];
+    uint32_t connected_generation =
+        bc.pending_connected_generation.exchange(0, std::memory_order_acq_rel);
+    uint32_t active_generation = bc.client_generation.load(std::memory_order_acquire);
+    if (mqtt_reconnect::generationMatches(active_generation, connected_generation) &&
+        bc.client != nullptr) {
+      CallbackEvent connected = {};
+      connected.type = CallbackEventType::MqttConnected;
+      connected.broker_idx = (int8_t)i;
+      connected.client = bc.client;
+      connected.generation = connected_generation;
+      handleMqttEvent(connected);
+    }
+
+    uint32_t generation = bc.pending_terminal_generation.exchange(0, std::memory_order_acq_rel);
+    if (!mqtt_reconnect::generationMatches(active_generation, generation) ||
+        bc.client == nullptr) {
       continue;
     }
-    handleMqttEvent(event);
+    Serial.printf("MQTT reporter: broker %d reconciling dropped terminal callback\n", i + 1);
+    reconcileMqttTerminal(i, (uint32_t)millis());
   }
+}
+
+bool MqttReporter::reconcileMqttTerminal(int broker_idx, uint32_t now_ms) {
+  if (broker_idx < 0 || broker_idx >= MQTT_MAX_BROKERS) return false;
+  BrokerClient &bc = _clients[broker_idx];
+  bc.connected = false;
+  bc.connected_since_ms = 0;
+  bc.started = bc.client != nullptr;
+  bc.online_status_pending = false;
+  bool advanced = mqtt_reconnect::onTerminalEvent(bc.recon, now_ms, (uint8_t)broker_idx);
+  if (advanced) {
+    Serial.printf("MQTT reporter: broker %d retry in %lu ms (rung %u%s)\n",
+                  broker_idx + 1,
+                  (unsigned long)mqtt_reconnect::nextWaitMs(bc.recon, now_ms),
+                  (unsigned int)bc.recon.rung,
+                  bc.recon.breaker ? ", breaker open" : "");
+  }
+  return advanced;
 }
 
 void MqttReporter::handleMqttEvent(const CallbackEvent &event) {
   if (event.broker_idx < 0 || event.broker_idx >= MQTT_MAX_BROKERS) return;
   BrokerClient &bc = _clients[event.broker_idx];
-  if (event.client == nullptr || event.client != bc.client) return;
+  if (event.client == nullptr || event.client != bc.client ||
+      !mqtt_reconnect::generationMatches(
+          bc.client_generation.load(std::memory_order_acquire), event.generation)) {
+    return;
+  }
 
   switch (event.type) {
     case CallbackEventType::MqttConnected:
+      if (!mqtt_reconnect::onConnected(bc.recon, (uint32_t)millis())) break;
       bc.started = true;
       bc.connected = true;
       bc.connected_since_ms = millis();
@@ -1024,7 +1177,6 @@ void MqttReporter::handleMqttEvent(const CallbackEvent &event) {
       bc.session_status_publish_count = 0;
       bc.session_packet_publish_count = 0;
       bc.last_neighbors_publish = 0;
-      mqtt_reconnect::onConnected(bc.recon, (uint32_t)millis());
       Serial.printf("MQTT reporter: broker %d connected\n", event.broker_idx + 1);
       break;
     case CallbackEventType::MqttDisconnected:
@@ -1035,33 +1187,19 @@ void MqttReporter::handleMqttEvent(const CallbackEvent &event) {
                                     ? (uint32_t)offline_time
                                     : 0;
       }
-      bc.connected = false;
-      bc.connected_since_ms = 0;
       // esp-mqtt auto-reconnect is disabled; the reporter loop retries on the
       // MqttReconnectPolicy schedule. Keep the client handle alive and count
       // exactly one ladder step per failed attempt / dropped session.
-      bc.started = true;
-      bc.online_status_pending = false;
       bc.disconnect_events++;
-      if (bc.recon.attempt_in_flight || bc.recon.session_live) {
-        mqtt_reconnect::onFailure(bc.recon, (uint32_t)millis());
-        Serial.printf("MQTT reporter: broker %d retry in %lu ms (rung %u%s)\n",
-                      event.broker_idx + 1,
-                      (unsigned long)mqtt_reconnect::nextWaitMs(bc.recon, (uint32_t)millis()),
-                      (unsigned int)bc.recon.rung,
-                      bc.recon.breaker ? ", breaker open" : "");
-      }
+      reconcileMqttTerminal(event.broker_idx, (uint32_t)millis());
       break;
     case CallbackEventType::MqttError:
       Serial.printf("MQTT reporter: broker %d error type=%d code=%d\n", event.broker_idx + 1,
                     event.error_type, event.error_code);
-      bc.connected = false;
-      bc.connected_since_ms = 0;
-      bc.started = true;
-      bc.online_status_pending = false;
       bc.last_error_type = event.error_type;
       bc.last_error_code = event.error_code;
       bc.error_events++;
+      reconcileMqttTerminal(event.broker_idx, (uint32_t)millis());
       break;
     default:
       break;
@@ -1635,6 +1773,9 @@ void MqttReporter::printBrokerStats(Print &out, int idx) const {
   out.println(line);
   snprintf(line, sizeof(line), "    error.events=%lu", (unsigned long)bc.error_events);
   out.println(line);
+  snprintf(line, sizeof(line), "    callback.queue_drops=%lu",
+           (unsigned long)bc.callback_queue_drops.load(std::memory_order_relaxed));
+  out.println(line);
   snprintf(line, sizeof(line), "    reconnect.rung=%u", (unsigned int)bc.recon.rung);
   out.println(line);
   snprintf(line, sizeof(line), "    reconnect.breaker=%s", bc.recon.breaker ? "yes" : "no");
@@ -1730,6 +1871,9 @@ void MqttReporter::printStats(Print &out, int broker_idx) const {
   out.println(line);
   snprintf(line, sizeof(line), "  wifi.last_disconnect_reason=%d", _last_wifi_disconnect_reason);
   out.println(line);
+  snprintf(line, sizeof(line), "  wifi.callback_queue_drops=%lu",
+           (unsigned long)_wifi_callback_queue_drops.load(std::memory_order_relaxed));
+  out.println(line);
   snprintf(line, sizeof(line), "  wifi.last_ip=%s", _wifi_last_ip.length() ? _wifi_last_ip.c_str() : "");
   out.println(line);
 
@@ -1763,6 +1907,7 @@ esp_err_t MqttReporter::mqttEventHandler(esp_mqtt_event_handle_t event) {
   CallbackEvent callback = {};
   callback.broker_idx = (int8_t)ctx->broker_idx;
   callback.client = event->client;
+  callback.generation = ctx->generation;
   switch (event->event_id) {
     case MQTT_EVENT_CONNECTED:
       callback.type = CallbackEventType::MqttConnected;
