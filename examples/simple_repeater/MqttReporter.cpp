@@ -12,8 +12,9 @@
 #include <SPIFFS.h>
 #include <math.h>
 
-// Strict NTP acceptance needs the SNTP sync-status API; it is part of the
-// IDF 4.4 lwip apps headers. Fall back to the epoch-only check if absent.
+// Prefer the SNTP status API when the installed IDF exposes it. The pinned
+// Arduino/IDF build leaves SNTP_CHECK_RESPONSE at its default of zero, so its
+// completion is intentionally reported as an explicit no-validation mode.
 #if defined(__has_include)
 #if __has_include(<esp_sntp.h>)
 #include <esp_sntp.h>
@@ -22,6 +23,22 @@
 #include <lwip/apps/esp_sntp.h>
 #define MQTT_HAVE_SNTP_STATUS 1
 #endif
+#endif
+
+#if defined(__has_include)
+#if __has_include(<lwip/apps/sntp_opts.h>)
+#include <lwip/apps/sntp_opts.h>
+#endif
+#if !defined(MQTT_HAVE_SNTP_STATUS) && __has_include(<lwip/apps/sntp.h>)
+#include <lwip/apps/sntp.h>
+#define MQTT_HAVE_SNTP_CONTROL 1
+#endif
+#endif
+
+#if defined(SNTP_CHECK_RESPONSE) && SNTP_CHECK_RESPONSE >= 2 && defined(MQTT_HAVE_SNTP_STATUS)
+#define MQTT_SNTP_RESPONSE_VALIDATED 1
+#else
+#define MQTT_SNTP_RESPONSE_VALIDATED 0
 #endif
 
 #if defined(CONFIG_IDF_TARGET_ESP32S3) && defined(__has_include)
@@ -42,17 +59,13 @@ std::atomic<MqttReporter *> MqttReporter::s_instance{nullptr};
 namespace {
 
 constexpr unsigned long MQTT_DEBUG_STATS_INTERVAL_MS = 60000UL;
-constexpr unsigned long MQTT_NTP_RETRY_INTERVAL_MS = 30000UL;
 constexpr unsigned long MQTT_NTP_TIMEOUT_MS = 10000UL;
-constexpr unsigned long MQTT_NTP_RETRY_MAX_MS = 300000UL;
 
 // NTP retry backoff: 30 s, 60 s, 120 s, 240 s (capped), by consecutive failures.
 // (Not constexpr: the statement body is not allowed under the ESP toolchain's
 // gnu++11 mode.)
 inline unsigned long ntpRetryDelayMs(uint8_t failures) {
-  const uint8_t shift = failures > 3 ? 3 : failures;
-  unsigned long delay = MQTT_NTP_RETRY_INTERVAL_MS << shift;
-  return delay > MQTT_NTP_RETRY_MAX_MS ? MQTT_NTP_RETRY_MAX_MS : delay;
+  return mqtt_clock::retryDelayMs(failures);
 }
 
 // Cap on esp-mqtt's outgoing message queue (QoS0 publishes). If the uplink
@@ -65,15 +78,51 @@ constexpr int MQTT_OUTBOX_HIGH_WATER = 8 * 1024;
 #endif
 constexpr uint32_t MQTT_CONNECT_RETRY_MAX_MS = 300000UL;
 
-// Heap budget for TLS sessions on boards without PSRAM: every wss/mqtts slot
-// costs tens of KB of internal RAM (buffers + TLS state), so limit how many
-// may run at once. Slots beyond the budget wait and retry periodically.
-#if defined(BOARD_HAS_PSRAM)
-constexpr int MQTT_MAX_ACTIVE_TLS = MQTT_MAX_BROKERS;
+// Heap budget for TLS sessions: use the same two-slot non-PSRAM and six-slot
+// PSRAM limits as before, but select the budget from runtime psramFound().
+constexpr uint8_t MQTT_MAX_ACTIVE_TLS_NO_PSRAM = 2;
+constexpr uint8_t MQTT_MAX_ACTIVE_TLS_PSRAM = MQTT_MAX_BROKERS;
+constexpr time_t MQTT_VALID_EPOCH = (time_t)mqtt_clock::kMinimumTrustworthyEpoch;
+
+#if MQTT_SNTP_RESPONSE_VALIDATED
+constexpr mqtt_clock::ValidationMode MQTT_NTP_VALIDATION_MODE =
+    mqtt_clock::ValidationMode::ValidatedExchange;
 #else
-constexpr int MQTT_MAX_ACTIVE_TLS = 2;
+constexpr mqtt_clock::ValidationMode MQTT_NTP_VALIDATION_MODE =
+    mqtt_clock::ValidationMode::ExplicitNoValidation;
 #endif
-constexpr time_t MQTT_VALID_EPOCH = 1700000000;
+
+uint32_t timeToEpoch(time_t value) {
+  if (value <= 0) return 0;
+  const uint64_t epoch = (uint64_t)value;
+  return epoch > UINT32_MAX ? 0 : (uint32_t)epoch;
+}
+
+int reporterBrokerConfigKey(const char *key, const char **field_out) {
+  if (key == nullptr || field_out == nullptr) return -1;
+  if (strncmp(key, "mqtt.", 5) == 0) key += 5;
+  if (key[0] >= '1' && key[0] <= '0' + MQTT_MAX_BROKERS && key[1] == '.') {
+    *field_out = key + 2;
+    return key[0] - '1';
+  }
+  if (strcmp(key, "wifi.ssid") == 0 || strcmp(key, "wifi.pass") == 0 ||
+      strcmp(key, "model") == 0 || strcmp(key, "client.version") == 0 ||
+      strcmp(key, "boot_count") == 0) {
+    return -1;
+  }
+  *field_out = key;
+  return 0;
+}
+
+bool reporterConfigNeedsClientRestart(const char *key, int *broker_idx_out) {
+  const char *field = nullptr;
+  int broker_idx = reporterBrokerConfigKey(key, &field);
+  if (broker_idx < 0 || field == nullptr) return false;
+  if (broker_idx_out != nullptr) *broker_idx_out = broker_idx;
+  // All connection/LWT fields are copied into esp-mqtt at init. The neighbor
+  // cadence is read by the reporter loop and does not require a restart.
+  return strcmp(field, "neighbor.interval") != 0;
+}
 
 const char *resetReasonString(int reason) {
   // Use numeric values so this remains buildable with older ESP-IDF headers
@@ -215,10 +264,13 @@ MqttReporter::MqttReporter(MyMesh &mesh, mesh::RTCClock &clock)
   _last_ntp_attempt = 0;
   _ntp_attempted = false;
   _ntp_sync_started_at = 0;
+  _ntp_attempt_generation = 0;
+  _ntp_pending_generation = 0;
   _ntp_failures = 0;
   _ntp_sync_pending = false;
   _time_synced = false;
   _ntp_synced_at_ms = 0;
+  _clock_source = mqtt_clock::Source::None;
   _origin_id[0] = '\0';
   _client_id[0] = '\0';
   StrHelper::strncpy(_reset_reason, "UNKNOWN", sizeof(_reset_reason));
@@ -262,9 +314,18 @@ MqttReporter::MqttReporter(MyMesh &mesh, mesh::RTCClock &clock)
     _clients[i].pending_connected_generation.store(0, std::memory_order_relaxed);
     _clients[i].pending_terminal_generation.store(0, std::memory_order_relaxed);
     _clients[i].callback_queue_drops.store(0, std::memory_order_relaxed);
+    _clients[i].pending_terminal_type.store(0, std::memory_order_relaxed);
+    _clients[i].pending_error_type.store(-1, std::memory_order_relaxed);
+    _clients[i].pending_error_code.store(-1, std::memory_order_relaxed);
+    _clients[i].pending_tls_last_error.store(-1, std::memory_order_relaxed);
+    _clients[i].pending_tls_stack_error.store(-1, std::memory_order_relaxed);
+    _clients[i].pending_tls_cert_verify_flags.store(-1, std::memory_order_relaxed);
+    _clients[i].pending_transport_sock_errno.store(-1, std::memory_order_relaxed);
+    _clients[i].pending_connect_return_code.store(-1, std::memory_order_relaxed);
     _clients[i].started = false;
     _clients[i].connected_since_ms = 0;
     _clients[i].connected = false;
+    _clients[i].effective_transport = mqtt_tls_cap::Transport::Unknown;
     _clients[i].next_connect_attempt_ms = 0;
     _clients[i].status_topic[0] = '\0';
     _clients[i].packets_topic[0] = '\0';
@@ -295,6 +356,12 @@ MqttReporter::MqttReporter(MyMesh &mesh, mesh::RTCClock &clock)
     _clients[i].heap_inactive = false;
     _clients[i].last_error_type = -1;
     _clients[i].last_error_code = -1;
+    _clients[i].last_tls_last_error = -1;
+    _clients[i].last_tls_stack_error = -1;
+    _clients[i].last_tls_cert_verify_flags = -1;
+    _clients[i].last_transport_sock_errno = -1;
+    _clients[i].last_connect_return_code = -1;
+    _clients[i].last_error_at_ms = 0;
     mqtt_reconnect::reset(_clients[i].recon);
     _clients[i].recon_seeded = false;
     for (uint8_t q = 0; q < MQTT_PUBLISH_QUEUE_SIZE; q++) {
@@ -320,6 +387,7 @@ MqttReporter::~MqttReporter() {
       esp_mqtt_client_stop(_clients[i].client);
       esp_mqtt_client_destroy(_clients[i].client);
       _clients[i].client = nullptr;
+      _clients[i].effective_transport = mqtt_tls_cap::Transport::Unknown;
     }
   }
   if (_callback_queue != nullptr) {
@@ -405,10 +473,15 @@ void MqttReporter::loop() {
     }
   }
 
-  if (!_time_synced && mqtt_reporting_enabled) {
+  if (mqtt_reporting_enabled) {
     checkNtpSyncComplete();
-    if (!_time_synced && !_ntp_sync_pending &&
-        (!_ntp_attempted || (uint32_t)(now - _last_ntp_attempt) >= ntpRetryDelayMs(_ntp_failures))) {
+    if (mqtt_clock::attemptDue(
+            _ntp_attempted,
+            _ntp_sync_pending,
+            _clock_source,
+            (uint32_t)now,
+            (uint32_t)_last_ntp_attempt,
+            _ntp_failures)) {
       _last_ntp_attempt = now;
       _ntp_attempted = true;
       syncTimeFromNtp();
@@ -587,8 +660,17 @@ void MqttReporter::resetBrokerConnection(int idx) {
     esp_mqtt_client_destroy(bc.client);
     bc.client = nullptr;
   }
+  bc.effective_transport = mqtt_tls_cap::Transport::Unknown;
   bc.pending_connected_generation.store(0, std::memory_order_release);
   bc.pending_terminal_generation.store(0, std::memory_order_release);
+  bc.pending_terminal_type.store(0, std::memory_order_release);
+  bc.pending_error_type.store(-1, std::memory_order_release);
+  bc.pending_error_code.store(-1, std::memory_order_release);
+  bc.pending_tls_last_error.store(-1, std::memory_order_release);
+  bc.pending_tls_stack_error.store(-1, std::memory_order_release);
+  bc.pending_tls_cert_verify_flags.store(-1, std::memory_order_release);
+  bc.pending_transport_sock_errno.store(-1, std::memory_order_release);
+  bc.pending_connect_return_code.store(-1, std::memory_order_release);
   clearPublishQueue(idx);
   bc.started = false;
   bc.connected = false;
@@ -639,12 +721,73 @@ bool MqttReporter::connectWiFi() {
   return false;
 }
 
+bool MqttReporter::tlsBudgetAllows(int broker_idx, mqtt_tls_cap::Transport requested) const {
+  (void)broker_idx;
+  mqtt_tls_cap::Slot slots[MQTT_MAX_BROKERS] = {};
+  for (int i = 0; i < MQTT_MAX_BROKERS; i++) {
+    const BrokerClient &bc = _clients[i];
+    slots[i].configured_enabled = _settings.broker(i).enabled != 0;
+    if (i == broker_idx && bc.client != nullptr) {
+      // connectMQTT() destroys this handle before creating its replacement;
+      // do not count that same live resource as an additional allocation.
+      slots[i].client_state = mqtt_tls_cap::ClientState::None;
+    } else if (bc.client == nullptr) {
+      slots[i].client_state = mqtt_tls_cap::ClientState::None;
+    } else if (bc.connected) {
+      slots[i].client_state = mqtt_tls_cap::ClientState::Connected;
+    } else if (bc.started) {
+      slots[i].client_state = mqtt_tls_cap::ClientState::Connecting;
+    } else {
+      // A handle which is not currently connected still owns its transport
+      // until the owner task destroys it.
+      slots[i].client_state = mqtt_tls_cap::ClientState::Disconnected;
+    }
+    slots[i].effective_transport = bc.effective_transport;
+  }
+
+  return mqtt_tls_cap::canStart(
+      requested,
+      slots,
+      MQTT_MAX_BROKERS,
+      psramFound(),
+      MQTT_MAX_ACTIVE_TLS_NO_PSRAM,
+      MQTT_MAX_ACTIVE_TLS_PSRAM);
+}
+
+uint8_t MqttReporter::liveTlsCount() const {
+  mqtt_tls_cap::Slot slots[MQTT_MAX_BROKERS] = {};
+  for (int i = 0; i < MQTT_MAX_BROKERS; i++) {
+    const BrokerClient &bc = _clients[i];
+    slots[i].configured_enabled = _settings.broker(i).enabled != 0;
+    if (bc.client == nullptr) {
+      slots[i].client_state = mqtt_tls_cap::ClientState::None;
+    } else if (bc.connected) {
+      slots[i].client_state = mqtt_tls_cap::ClientState::Connected;
+    } else if (bc.started) {
+      slots[i].client_state = mqtt_tls_cap::ClientState::Connecting;
+    } else {
+      slots[i].client_state = mqtt_tls_cap::ClientState::Disconnected;
+    }
+    slots[i].effective_transport = bc.effective_transport;
+  }
+  return mqtt_tls_cap::liveTlsCount(slots, MQTT_MAX_BROKERS);
+}
+
+uint8_t MqttReporter::tlsCap() const {
+  return mqtt_tls_cap::maxActiveTls(
+      psramFound(), MQTT_MAX_ACTIVE_TLS_NO_PSRAM, MQTT_MAX_ACTIVE_TLS_PSRAM);
+}
+
 void MqttReporter::processBrokerReconnects(uint32_t now_ms) {
   bool attempted_this_pass = false;
   for (int i = 0; i < MQTT_MAX_BROKERS; i++) {
     const MqttBrokerConfig &b = _settings.broker(i);
     BrokerClient &bc = _clients[i];
     if (!b.enabled || b.uri[0] == '\0') {
+      if (bc.client != nullptr) {
+        Serial.printf("MQTT reporter: broker %d disabled; stopping live client before apply\n", i + 1);
+        resetBrokerConnection(i);
+      }
       if (bc.recon_seeded) {
         // Disabled: drop any pending schedule so a re-enable starts fresh.
         mqtt_reconnect::reset(bc.recon);
@@ -667,20 +810,19 @@ void MqttReporter::processBrokerReconnects(uint32_t now_ms) {
     }
 
     if (!bc.started) {
-      // Heap budget: boards without PSRAM only fit so many TLS sessions at
-      // once; keep surplus TLS slots parked and re-evaluate every minute.
-      int active_tls = 0;
-      for (int j = 0; j < MQTT_MAX_BROKERS; j++) {
-        if (_clients[j].started && _clients[j].client != nullptr &&
-            brokerNeedsTimeSync(j)) {
-          active_tls++;
-        }
-      }
-      if (brokerNeedsTimeSync(i) && active_tls >= MQTT_MAX_ACTIVE_TLS) {
+      // Heap budget is based on the runtime PSRAM result and on every live
+      // client's recorded transport, including connecting/disconnected
+      // handles. Stored URI edits cannot reclassify an allocated client.
+      const mqtt_tls_cap::Transport requested_transport =
+          mqtt_tls_cap::transportForUri(b.uri);
+      if (mqtt_tls_cap::countsAgainstTlsBudget(requested_transport) &&
+          !tlsBudgetAllows(i, requested_transport)) {
+        const uint8_t tls_cap = mqtt_tls_cap::maxActiveTls(
+            psramFound(), MQTT_MAX_ACTIVE_TLS_NO_PSRAM, MQTT_MAX_ACTIVE_TLS_PSRAM);
         if (!bc.heap_inactive) {
           bc.heap_inactive = true;
-          Serial.printf("MQTT reporter: broker %d inactive (heap budget: max %d active TLS brokers)\n",
-                        i + 1, MQTT_MAX_ACTIVE_TLS);
+          Serial.printf("MQTT reporter: broker %d inactive (heap budget: max %u live TLS brokers)\n",
+                        i + 1, (unsigned int)tls_cap);
         }
         if (!bc.recon.attempt_pending) {
           bc.recon.attempt_pending = true;
@@ -721,6 +863,7 @@ void MqttReporter::processBrokerReconnects(uint32_t now_ms) {
           Serial.printf("MQTT reporter: broker %d restart failed; rebuilding client\n", i + 1);
           esp_mqtt_client_destroy(bc.client);
           bc.client = nullptr;
+          bc.effective_transport = mqtt_tls_cap::Transport::Unknown;
           bc.started = false;
           bc.next_connect_attempt_ms = 0;
           bc.pending_connected_generation.store(0, std::memory_order_release);
@@ -740,6 +883,13 @@ bool MqttReporter::connectMQTT(int idx) {
   if (bc.started) return true;
   if (WiFi.status() != WL_CONNECTED) return false;
   if (broker.uri[0] == '\0') return false;
+  const mqtt_tls_cap::Transport requested_transport =
+      mqtt_tls_cap::transportForUri(broker.uri);
+  if (mqtt_tls_cap::countsAgainstTlsBudget(requested_transport) &&
+      !tlsBudgetAllows(idx, requested_transport)) {
+    bc.heap_inactive = true;
+    return false;
+  }
   if (brokerNeedsTimeSync(idx) && !_time_synced) return false;
   if (!_settings.brokerCredentialsAllowed(idx)) {
     Serial.printf("MQTT reporter: broker %d refusing cleartext URI while credentials are configured\n", idx + 1);
@@ -810,11 +960,13 @@ bool MqttReporter::connectMQTT(int idx) {
   bc.client = esp_mqtt_client_init(&mqtt_config);
   if (bc.client == nullptr) {
     bc.connect_start_failures++;
+    bc.effective_transport = mqtt_tls_cap::Transport::Unknown;
     mqtt_reconnect::onTerminalEvent(bc.recon, millis(), (uint8_t)idx);
     bc.next_connect_attempt_ms = 0;
     Serial.printf("MQTT reporter: broker %d esp_mqtt_client_init failed\n", idx + 1);
     return true;
   }
+  bc.effective_transport = requested_transport;
 
   // Set before start so a fast disconnect/error callback cannot be overwritten
   // by a late assignment after esp_mqtt_client_start() returns.
@@ -829,6 +981,7 @@ bool MqttReporter::connectMQTT(int idx) {
     bc.pending_connected_generation.store(0, std::memory_order_release);
     bc.pending_terminal_generation.store(0, std::memory_order_release);
     bc.started = false;
+    bc.effective_transport = mqtt_tls_cap::Transport::Unknown;
     return true;
   }
 
@@ -842,43 +995,131 @@ void MqttReporter::syncTimeFromNtp() {
   IPAddress resolved;
   if (!WiFi.hostByName(MQTT_NTP_SERVER, resolved)) {
     if (_ntp_failures < UINT8_MAX) _ntp_failures++;
-    Serial.printf("MQTT reporter: NTP server '%s' did not resolve; retry in %lu ms\n",
-                  MQTT_NTP_SERVER, ntpRetryDelayMs(_ntp_failures));
+    if (!acceptExistingClockFallback("DNS failure")) {
+      Serial.printf("MQTT reporter: NTP server '%s' did not resolve and no trustworthy clock exists; retry in %lu ms\n",
+                    MQTT_NTP_SERVER, ntpRetryDelayMs(_ntp_failures));
+    } else {
+      Serial.printf("MQTT reporter: NTP server '%s' did not resolve; using existing clock and retrying in %lu ms\n",
+                    MQTT_NTP_SERVER, ntpRetryDelayMs(_ntp_failures));
+    }
     return;
   }
-  configTime(0, 0, MQTT_NTP_SERVER);
+
+  // configTime() starts a background SNTP service. Stop the previous service
+  // and clear its completion bit first so a late result cannot satisfy this
+  // fresh attempt.
+  stopNtpService();
+  _ntp_attempt_generation = mqtt_reconnect::nextGeneration(_ntp_attempt_generation);
+  _ntp_pending_generation = _ntp_attempt_generation;
   _ntp_sync_started_at = millis();
   _ntp_sync_pending = true;
-  Serial.println("MQTT reporter: NTP sync started");
+  configTime(0, 0, MQTT_NTP_SERVER);
+  Serial.printf("MQTT reporter: NTP sync started (attempt=%lu, mode=%s)\n",
+                (unsigned long)_ntp_attempt_generation,
+                mqtt_clock::validationModeName(MQTT_NTP_VALIDATION_MODE));
 }
 
 void MqttReporter::checkNtpSyncComplete() {
-  time_t now = time(nullptr);
+  // Never consume a completion bit unless our owner task has a current
+  // attempt pending. The status API has no request identifier of its own.
+  if (!_ntp_sync_pending || _ntp_pending_generation == 0) return;
+
+  const uint32_t now_ms = (uint32_t)millis();
+  const uint32_t system_epoch = timeToEpoch(time(nullptr));
+  mqtt_clock::ReplyState reply = mqtt_clock::ReplyState::Reset;
+  bool response_valid = false;
 #ifdef MQTT_HAVE_SNTP_STATUS
-  // Strict acceptance: only trust a time that came back from a completed
-  // SNTP exchange with our configured server ("status API"), not merely
-  // "some clock value appeared".
-  const bool sync_completed = (esp_sntp_get_sync_status() == SNTP_SYNC_STATUS_COMPLETED);
+  const sntp_sync_status_t sync_status = esp_sntp_get_sync_status();
+  if (sync_status == SNTP_SYNC_STATUS_COMPLETED) {
+    reply = mqtt_clock::ReplyState::Completed;
+    response_valid = MQTT_SNTP_RESPONSE_VALIDATED != 0;
+  } else if (sync_status == SNTP_SYNC_STATUS_IN_PROGRESS) {
+    reply = mqtt_clock::ReplyState::InProgress;
+  }
 #else
-  const bool sync_completed = true;  // fall back to the epoch check
+  // Some older SDKs expose no status API. This is deliberately explicit:
+  // epoch observation is accepted only as `ntp_completed_no_validation` and
+  // is never reported as a validated exchange.
+  if (mqtt_clock::plausibleEpoch(system_epoch)) {
+    reply = mqtt_clock::ReplyState::Completed;
+  }
 #endif
-  if (sync_completed && now >= MQTT_VALID_EPOCH) {
-    _clock->setCurrentTime((uint32_t)now);
-    _time_synced = true;
-    _ntp_synced_at_ms = millis();
-    _ntp_sync_pending = false;
-    _ntp_failures = 0;
-    Serial.println("MQTT reporter: NTP sync complete");
+
+  mqtt_clock::Acceptance decision = mqtt_clock::evaluateNtpAttempt(
+      true,
+      _ntp_pending_generation,
+      _ntp_attempt_generation,
+      reply,
+      system_epoch,
+      response_valid,
+      MQTT_NTP_VALIDATION_MODE);
+  if (decision.accepted) {
+    recordClockAcceptance(decision, now_ms);
     return;
   }
 
-  if (_ntp_sync_pending &&
-      (uint32_t)(millis() - _ntp_sync_started_at) >= MQTT_NTP_TIMEOUT_MS) {
+  if ((uint32_t)(now_ms - _ntp_sync_started_at) >= MQTT_NTP_TIMEOUT_MS) {
     _ntp_sync_pending = false;
+    _ntp_pending_generation = 0;
+    stopNtpService();
     if (_ntp_failures < UINT8_MAX) _ntp_failures++;
-    Serial.printf("MQTT reporter: NTP sync timed out; retry in %lu ms\n",
-                  ntpRetryDelayMs(_ntp_failures));
+    if (!acceptExistingClockFallback("timeout")) {
+      Serial.printf("MQTT reporter: NTP sync timed out with no trustworthy existing clock; retry in %lu ms\n",
+                    ntpRetryDelayMs(_ntp_failures));
+    } else {
+      Serial.printf("MQTT reporter: NTP sync timed out; keeping existing clock and retrying in %lu ms\n",
+                    ntpRetryDelayMs(_ntp_failures));
+    }
   }
+}
+
+void MqttReporter::stopNtpService() {
+#ifdef MQTT_HAVE_SNTP_STATUS
+  esp_sntp_stop();
+  esp_sntp_set_sync_status(SNTP_SYNC_STATUS_RESET);
+#elif defined(MQTT_HAVE_SNTP_CONTROL)
+  if (sntp_enabled()) sntp_stop();
+#endif
+}
+
+void MqttReporter::recordClockAcceptance(
+    const mqtt_clock::Acceptance &decision, uint32_t now_ms) {
+  if (!decision.accepted) return;
+  _clock->setCurrentTime(decision.epoch);
+  _time_synced = true;
+  _ntp_synced_at_ms = now_ms;
+  _clock_source = decision.source;
+  _ntp_sync_pending = false;
+  _ntp_pending_generation = 0;
+  if (mqtt_clock::isNtpSource(decision.source)) _ntp_failures = 0;
+  stopNtpService();
+  Serial.printf("MQTT reporter: clock accepted source=%s validated=%s epoch=%lu\n",
+                mqtt_clock::sourceName(decision.source),
+                decision.validated ? "yes" : "no",
+                (unsigned long)decision.epoch);
+}
+
+bool MqttReporter::acceptExistingClockFallback(const char *reason) {
+  mqtt_clock::Acceptance decision =
+      mqtt_clock::acceptExistingClock(_clock->getCurrentTime());
+  if (!decision.accepted) return false;
+
+  // A failed refresh does not erase a previously accepted source or make its
+  // age look fresh. It only leaves the current trusted clock in place.
+  if (_time_synced) {
+    _ntp_sync_pending = false;
+    _ntp_pending_generation = 0;
+    stopNtpService();
+    Serial.printf("MQTT reporter: NTP %s; retaining clock source=%s age=%lu ms\n",
+                  reason ? reason : "unavailable",
+                  mqtt_clock::sourceName(_clock_source),
+                  (unsigned long)mqtt_clock::ageMs(
+                      true, _ntp_synced_at_ms, (uint32_t)millis()));
+    return true;
+  }
+
+  recordClockAcceptance(decision, (uint32_t)millis());
+  return true;
 }
 
 void MqttReporter::publishStatus(int idx, const char *status) {
@@ -1019,6 +1260,7 @@ void MqttReporter::enqueueCallbackEvent(const CallbackEvent &event) {
       if (mqtt_reconnect::generationMatches(active_generation, event.generation)) {
         bc.pending_connected_generation.store(0, std::memory_order_release);
         bc.pending_terminal_generation.store(0, std::memory_order_release);
+        bc.pending_terminal_type.store(0, std::memory_order_release);
       }
     }
     return;
@@ -1036,6 +1278,7 @@ void MqttReporter::enqueueCallbackEvent(const CallbackEvent &event) {
     }
     if (event.type == CallbackEventType::MqttConnected) {
       bc.pending_terminal_generation.store(0, std::memory_order_release);
+      bc.pending_terminal_type.store(0, std::memory_order_release);
       bc.pending_connected_generation.store(event.generation, std::memory_order_release);
     } else if ((event.type == CallbackEventType::MqttDisconnected ||
                 event.type == CallbackEventType::MqttError) &&
@@ -1044,6 +1287,14 @@ void MqttReporter::enqueueCallbackEvent(const CallbackEvent &event) {
       // could not be allocated. Multiple terminal callbacks may collapse,
       // which is safe because their policy transition is idempotent.
       bc.pending_connected_generation.store(0, std::memory_order_release);
+      bc.pending_terminal_type.store((uint8_t)event.type, std::memory_order_relaxed);
+      bc.pending_error_type.store(event.error_type, std::memory_order_relaxed);
+      bc.pending_error_code.store(event.error_code, std::memory_order_relaxed);
+      bc.pending_tls_last_error.store(event.tls_last_error, std::memory_order_relaxed);
+      bc.pending_tls_stack_error.store(event.tls_stack_error, std::memory_order_relaxed);
+      bc.pending_tls_cert_verify_flags.store(event.tls_cert_verify_flags, std::memory_order_relaxed);
+      bc.pending_transport_sock_errno.store(event.transport_sock_errno, std::memory_order_relaxed);
+      bc.pending_connect_return_code.store(event.connect_return_code, std::memory_order_relaxed);
       bc.pending_terminal_generation.store(event.generation, std::memory_order_release);
     }
   } else {
@@ -1133,7 +1384,24 @@ void MqttReporter::processPendingTerminalEvents() {
       continue;
     }
     Serial.printf("MQTT reporter: broker %d reconciling dropped terminal callback\n", i + 1);
-    reconcileMqttTerminal(i, (uint32_t)millis());
+    CallbackEvent terminal = {};
+    terminal.type = static_cast<CallbackEventType>(bc.pending_terminal_type.load(std::memory_order_relaxed));
+    if (terminal.type != CallbackEventType::MqttDisconnected &&
+        terminal.type != CallbackEventType::MqttError) {
+      terminal.type = CallbackEventType::MqttDisconnected;
+    }
+    terminal.broker_idx = (int8_t)i;
+    terminal.client = bc.client;
+    terminal.generation = generation;
+    terminal.error_type = bc.pending_error_type.load(std::memory_order_relaxed);
+    terminal.error_code = bc.pending_error_code.load(std::memory_order_relaxed);
+    terminal.tls_last_error = bc.pending_tls_last_error.load(std::memory_order_relaxed);
+    terminal.tls_stack_error = bc.pending_tls_stack_error.load(std::memory_order_relaxed);
+    terminal.tls_cert_verify_flags = bc.pending_tls_cert_verify_flags.load(std::memory_order_relaxed);
+    terminal.transport_sock_errno = bc.pending_transport_sock_errno.load(std::memory_order_relaxed);
+    terminal.connect_return_code = bc.pending_connect_return_code.load(std::memory_order_relaxed);
+    bc.pending_terminal_type.store(0, std::memory_order_release);
+    handleMqttEvent(terminal);
   }
 }
 
@@ -1198,6 +1466,12 @@ void MqttReporter::handleMqttEvent(const CallbackEvent &event) {
                     event.error_type, event.error_code);
       bc.last_error_type = event.error_type;
       bc.last_error_code = event.error_code;
+      bc.last_tls_last_error = event.tls_last_error;
+      bc.last_tls_stack_error = event.tls_stack_error;
+      bc.last_tls_cert_verify_flags = event.tls_cert_verify_flags;
+      bc.last_transport_sock_errno = event.transport_sock_errno;
+      bc.last_connect_return_code = event.connect_return_code;
+      bc.last_error_at_ms = (uint32_t)millis();
       bc.error_events++;
       reconcileMqttTerminal(event.broker_idx, (uint32_t)millis());
       break;
@@ -1208,8 +1482,8 @@ void MqttReporter::handleMqttEvent(const CallbackEvent &event) {
 
 bool MqttReporter::brokerNeedsTimeSync(int idx) const {
   if (idx < 0 || idx >= MQTT_MAX_BROKERS) return false;
-  const char *uri = _settings.broker(idx).uri;
-  return strncmp(uri, "wss://", 6) == 0 || strncmp(uri, "mqtts://", 8) == 0;
+  return mqtt_tls_cap::countsAgainstTlsBudget(
+      mqtt_tls_cap::transportForUri(_settings.broker(idx).uri));
 }
 
 void MqttReporter::recordReconnectAttempt(BrokerClient &bc, uint32_t now_ms) {
@@ -1426,9 +1700,23 @@ String MqttReporter::buildStatusStatsPayload(int broker_idx) const {
   stats += "\"uptime_ms\":" + String(now_ms);
   stats += ",\"boot_count\":" + String(_boot_count);
   stats += ",\"reset_reason\":\"" + jsonEscape(_reset_reason) + "\"";
-  stats += ",\"ntp_synced\":" + String(_time_synced ? "true" : "false");
+  stats += ",\"ntp_synced\":" + String(mqtt_clock::isNtpSource(_clock_source) ? "true" : "false");
+  stats += ",\"clock_trusted\":" + String(_time_synced ? "true" : "false");
+  stats += ",\"ntp_sync_source\":\"";
+  stats += mqtt_clock::sourceName(_clock_source);
+  stats += "\"";
+  stats += ",\"ntp_sync_validated\":" + String(
+      mqtt_clock::isValidated(_clock_source) ? "true" : "false");
+  stats += ",\"ntp_sync_fallback\":" + String(
+      mqtt_clock::isFallback(_clock_source) ? "true" : "false");
+  stats += ",\"ntp_validation_mode\":\"";
+  stats += mqtt_clock::validationModeName(MQTT_NTP_VALIDATION_MODE);
+  stats += "\"";
   stats += ",\"ntp_sync_age_ms\":" + String(
-      _time_synced && _ntp_synced_at_ms != 0 ? (uint32_t)(now_ms - _ntp_synced_at_ms) : 0);
+      mqtt_clock::ageMs(_time_synced, (uint32_t)_ntp_synced_at_ms, now_ms));
+  stats += ",\"ntp_attempt_generation\":" + String(_ntp_attempt_generation);
+  stats += ",\"ntp_last_attempt_age_ms\":" + String(
+      mqtt_clock::ageMs(_ntp_attempted, (uint32_t)_last_ntp_attempt, now_ms));
   stats += ",\"boot_epoch\":";
   time_t current_epoch = time(nullptr);
   uint32_t boot_epoch = 0;
@@ -1529,7 +1817,20 @@ String MqttReporter::buildStatusStatsPayload(int broker_idx) const {
     stats += ",\"reconnect_next_in_ms\":" + String(mqtt_reconnect::nextWaitMs(bc.recon, now_ms));
     stats += ",\"last_error_type\":" + String(bc.last_error_type);
     stats += ",\"last_error_code\":" + String(bc.last_error_code);
+    stats += ",\"last_tls_err\":" + String(bc.last_tls_last_error);
+    stats += ",\"last_tls_stack_err\":" + String(bc.last_tls_stack_error);
+    stats += ",\"last_tls_cert_verify_flags\":" + String(bc.last_tls_cert_verify_flags);
+    stats += ",\"last_sock_errno\":" + String(bc.last_transport_sock_errno);
+    stats += ",\"last_connect_return_code\":" + String(bc.last_connect_return_code);
+    stats += ",\"last_error_at_ms\":" + String(bc.last_error_at_ms);
+    stats += ",\"last_error_age_ms\":" + String(
+        mqtt_clock::ageMs(bc.last_error_at_ms != 0, bc.last_error_at_ms, now_ms));
     stats += ",\"heap_inactive\":" + String(bc.heap_inactive ? "true" : "false");
+    stats += ",\"effective_transport\":\"";
+    stats += mqtt_tls_cap::transportName(bc.effective_transport);
+    stats += "\"";
+    stats += ",\"tls_live\":" + String(liveTlsCount());
+    stats += ",\"tls_cap\":" + String(tlsCap());
     String broker_uri = sanitizeBrokerUri(broker.uri);
     stats += ",\"broker_uri\":\"" + jsonEscape(broker_uri.c_str()) + "\"";
     stats += ",\"broker_username\":\"" + jsonEscape(broker.username) + "\"";
@@ -1540,7 +1841,11 @@ String MqttReporter::buildStatusStatsPayload(int broker_idx) const {
     stats += ",\"session_packet_publishes\":" + String(bc.session_packet_publish_count);
     stats += ",\"publish_failures\":" + String(bc.publish_failures);
     stats += ",\"publish_queue_depth\":" + String(bc.queue_count);
+    stats += ",\"publish_queue_cap\":" + String(MQTT_PUBLISH_QUEUE_SIZE);
     stats += ",\"publish_queue_drops\":" + String(bc.queue_drops);
+    stats += ",\"publish_outbox_size\":" + String(
+        bc.client != nullptr ? esp_mqtt_client_get_outbox_size(bc.client) : -1);
+    stats += ",\"publish_outbox_cap\":" + String(MQTT_OUTBOX_HIGH_WATER);
     stats += ",\"publish_outbox_drops\":" + String(bc.outbox_drops);
     stats += ",\"connected\":" + String(bc.connected ? "true" : "false");
     stats += ",\"uptime_ms\":" + String(bc.connected_since_ms != 0 ? (now_ms - bc.connected_since_ms) : 0);
@@ -1659,6 +1964,9 @@ bool MqttReporter::getConfigValue(const char *key, char *dest, size_t dest_size,
 }
 
 bool MqttReporter::setConfigValue(const char *key, const char *value) {
+  int changed_broker_idx = -1;
+  const bool restart_live_client =
+      reporterConfigNeedsClientRestart(key, &changed_broker_idx);
   if (!_settings.setValue(key, value)) return false;
   if (!_settings.save()) {
     // Not persisted — restore the last known-good configuration from disk.
@@ -1673,6 +1981,13 @@ bool MqttReporter::setConfigValue(const char *key, const char *value) {
   _config_crc32 = _settings.configCrc32();
   _identity_strings_dirty = true;
   ensureIdentityStrings();
+  if (restart_live_client && changed_broker_idx >= 0 &&
+      changed_broker_idx < MQTT_MAX_BROKERS &&
+      _clients[changed_broker_idx].client != nullptr) {
+    Serial.printf("MQTT reporter: broker %d connection settings changed; applying via owner-task teardown\n",
+                  changed_broker_idx + 1);
+    resetBrokerConnection(changed_broker_idx);
+  }
   return true;
 }
 
@@ -1789,13 +2104,31 @@ void MqttReporter::printBrokerStats(Print &out, int idx) const {
   out.println(line);
   snprintf(line, sizeof(line), "    publish.failures=%lu", (unsigned long)bc.publish_failures);
   out.println(line);
-  snprintf(line, sizeof(line), "    publish.queue_depth=%u", (unsigned int)bc.queue_count);
+  snprintf(line, sizeof(line), "    publish.queue_depth=%u/%u",
+           (unsigned int)bc.queue_count, (unsigned int)MQTT_PUBLISH_QUEUE_SIZE);
   out.println(line);
   snprintf(line, sizeof(line), "    publish.queue_drops=%lu", (unsigned long)bc.queue_drops);
   out.println(line);
+  snprintf(line, sizeof(line), "    publish.outbox_size=%d/%d",
+           bc.client != nullptr ? esp_mqtt_client_get_outbox_size(bc.client) : -1,
+           MQTT_OUTBOX_HIGH_WATER);
+  out.println(line);
   snprintf(line, sizeof(line), "    publish.outbox_drops=%lu", (unsigned long)bc.outbox_drops);
   out.println(line);
-  snprintf(line, sizeof(line), "    last_error.type=%d code=%d", bc.last_error_type, bc.last_error_code);
+  snprintf(line, sizeof(line), "    last_error.type=%d code=%d at_ms=%lu age_ms=%lu",
+           bc.last_error_type, bc.last_error_code,
+           (unsigned long)bc.last_error_at_ms,
+           (unsigned long)mqtt_clock::ageMs(
+               bc.last_error_at_ms != 0, bc.last_error_at_ms, (uint32_t)millis()));
+  out.println(line);
+  snprintf(line, sizeof(line), "    last_error.tls=%d stack=%d cert_flags=%d sock=%d mqtt_rc=%d",
+           bc.last_tls_last_error, bc.last_tls_stack_error,
+           bc.last_tls_cert_verify_flags, bc.last_transport_sock_errno,
+           bc.last_connect_return_code);
+  out.println(line);
+  snprintf(line, sizeof(line), "    effective_transport=%s tls_live=%u/%u",
+           mqtt_tls_cap::transportName(bc.effective_transport),
+           (unsigned int)liveTlsCount(), (unsigned int)tlsCap());
   out.println(line);
   snprintf(line, sizeof(line), "    heap.inactive=%s", bc.heap_inactive ? "yes" : "no");
   out.println(line);
@@ -1876,6 +2209,18 @@ void MqttReporter::printStats(Print &out, int broker_idx) const {
   out.println(line);
   snprintf(line, sizeof(line), "  wifi.last_ip=%s", _wifi_last_ip.length() ? _wifi_last_ip.c_str() : "");
   out.println(line);
+  snprintf(line, sizeof(line), "  clock.source=%s validated=%s fallback=%s age_ms=%lu",
+           mqtt_clock::sourceName(_clock_source),
+           mqtt_clock::isValidated(_clock_source) ? "yes" : "no",
+           mqtt_clock::isFallback(_clock_source) ? "yes" : "no",
+           (unsigned long)mqtt_clock::ageMs(
+               _time_synced, (uint32_t)_ntp_synced_at_ms, (uint32_t)millis()));
+  out.println(line);
+  snprintf(line, sizeof(line), "  clock.validation_mode=%s attempt=%lu pending=%s",
+           mqtt_clock::validationModeName(MQTT_NTP_VALIDATION_MODE),
+           (unsigned long)_ntp_attempt_generation,
+           _ntp_sync_pending ? "yes" : "no");
+  out.println(line);
 
   if (broker_idx >= 0 && broker_idx < MQTT_MAX_BROKERS) {
     printBrokerStats(out, broker_idx);
@@ -1906,6 +2251,13 @@ esp_err_t MqttReporter::mqttEventHandler(esp_mqtt_event_handle_t event) {
   EventContext *ctx = static_cast<EventContext *>(event->user_context);
   CallbackEvent callback = {};
   callback.broker_idx = (int8_t)ctx->broker_idx;
+  callback.error_type = -1;
+  callback.error_code = -1;
+  callback.tls_last_error = -1;
+  callback.tls_stack_error = -1;
+  callback.tls_cert_verify_flags = -1;
+  callback.transport_sock_errno = -1;
+  callback.connect_return_code = -1;
   callback.client = event->client;
   callback.generation = ctx->generation;
   switch (event->event_id) {
@@ -1920,6 +2272,11 @@ esp_err_t MqttReporter::mqttEventHandler(esp_mqtt_event_handle_t event) {
       callback.error_type = event->error_handle ? event->error_handle->error_type : -1;
       callback.error_code = -1;
       if (event->error_handle != nullptr) {
+        callback.tls_last_error = (int)event->error_handle->esp_tls_last_esp_err;
+        callback.tls_stack_error = event->error_handle->esp_tls_stack_err;
+        callback.tls_cert_verify_flags = event->error_handle->esp_tls_cert_verify_flags;
+        callback.transport_sock_errno = event->error_handle->esp_transport_sock_errno;
+        callback.connect_return_code = (int)event->error_handle->connect_return_code;
         // The connect return code is only meaningful for refused connects;
         // the socket errno is the useful detail for transport failures.
         callback.error_code = (event->error_handle->error_type == MQTT_ERROR_TYPE_TCP_TRANSPORT)
