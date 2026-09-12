@@ -12,8 +12,10 @@
 #include <mqtt_client.h>
 #include "MqttSettings.h"
 #include "helpers/MqttClockPolicy.h"
+#include "helpers/MqttPublishGuard.h"
 #include "helpers/MqttReconnectPolicy.h"
 #include "helpers/MqttTlsCapPolicy.h"
+#include "helpers/MqttWirePreflight.h"
 
 class MyMesh;
 
@@ -82,10 +84,15 @@ private:
                 "MQTT_PUBLISH_QUEUE_DEPTH must be between 1 and 255");
   static_assert(MQTT_MAX_PUBLISHES_PER_LOOP > 0 && MQTT_MAX_PUBLISHES_PER_LOOP <= UINT8_MAX,
                 "MQTT_MAX_PUBLISHES_PER_LOOP must be between 1 and 255");
+  static_assert(384 - 1 == mqtt_publish::kMaxStatusTopicBytes,
+                "status topic and CONNECT-size contract drifted");
 
   struct PublishEntry {
-    String topic;
-    String payload;
+    char *topic;
+    char *payload;
+    size_t topic_len;
+    size_t payload_len;
+    size_t copied_bytes;
     uint8_t qos;
     bool retain;
     bool is_status;
@@ -114,13 +121,15 @@ private:
     char status_topic[384];
     char packets_topic[384];
     char neighbors_topic[384];
-    String offline_payload;
+    char *offline_payload;
+    size_t offline_payload_len;
     unsigned long last_status_publish;
     unsigned long last_neighbors_publish;
     PublishEntry publish_queue[MQTT_PUBLISH_QUEUE_SIZE];
     uint8_t queue_head;
     uint8_t queue_tail;
     uint8_t queue_count;
+    size_t queue_bytes;
     bool status_queued;
     volatile bool online_status_pending;
     uint32_t connect_attempts;
@@ -134,6 +143,7 @@ private:
     uint32_t session_packet_publish_count;
     uint32_t publish_failures;
     uint32_t queue_drops;
+    uint32_t queue_byte_drops;
     uint32_t outbox_drops;
     uint32_t reconnect_attempt_ms[MQTT_RECONNECT_RING_SIZE];
     uint8_t reconnect_attempt_head;
@@ -205,7 +215,8 @@ private:
   std::atomic<uint8_t> _pending_wifi_event;
   std::atomic<int> _pending_wifi_disconnect_reason;
   std::atomic<uint32_t> _wifi_callback_queue_drops;
-  String _last_rx_raw;
+  uint8_t _last_rx_raw[MAX_TRANS_UNIT];
+  size_t _last_rx_raw_len;
   unsigned long _last_wifi_attempt;
   bool _wifi_attempted;
   unsigned long _last_stats_print;
@@ -233,6 +244,12 @@ private:
   uint32_t _tx_publish_calls;
   uint32_t _tx_fail_publish_calls;
   uint32_t _publish_skipped_no_connection;
+  uint32_t _build_failures;
+  uint32_t _serialize_preflight_drops;
+  size_t _publish_queue_bytes_total;
+  char *_build_buffer;
+  bool _psram_available;
+  uint8_t _next_publish_broker;
   uint32_t _wifi_reconnect_attempts;
   uint8_t _wifi_consecutive_failures;
   uint32_t _loop_iterations;
@@ -265,8 +282,9 @@ private:
   uint8_t liveTlsCount() const;
   uint8_t tlsCap() const;
   void publishStatus(int idx, const char *status);
-  bool enqueuePublish(int idx, const char *topic, const String &payload, uint8_t qos, bool retain, bool is_status);
-  void drainPublishQueue(int idx, uint8_t max_publishes = MQTT_PUBLISHES_PER_LOOP);
+  bool enqueuePublish(int idx, const char *topic, const char *payload, size_t payload_len,
+                      uint8_t qos, bool retain, bool is_status);
+  void drainPublishQueue(int idx, mqtt_publish::DrainState &drain);
   void clearPublishQueue(int idx);
   bool anyBrokerConnected() const;
   void enqueueCallbackEvent(const CallbackEvent &event);
@@ -282,34 +300,37 @@ private:
   void upsertHeardNode(const uint8_t id[PUB_KEY_SIZE], uint32_t now_ms);
   void upsertNeighbor(const uint8_t id[PUB_KEY_SIZE], int rssi, float snr, uint32_t now_ms);
   uint32_t heardNodesLast24Hours(uint32_t now_ms) const;
-  String buildNeighborsPayload(uint32_t now_ms) const;
+  bool buildNeighborsPayload(uint32_t now_ms, size_t &payload_len) const;
   void maybePublishNeighbors(uint32_t now_ms);
 
-  String buildIsoTimestamp() const;
-  String buildTimeField() const;
-  String buildDateField() const;
-  String buildRadioString() const;
-  void appendCpuIdleStats(String &stats) const;
-  String buildStatusPayload(int broker_idx, const char *status) const;
-  String buildStatusStatsPayload(int broker_idx) const;
-  String buildPacketPayload(
+  void appendCpuIdleStats(mqtt_publish::CheckedBufferBuilder &builder) const;
+  bool appendStatusStatsPayload(mqtt_publish::CheckedBufferBuilder &builder, int broker_idx) const;
+  bool buildStatusPayload(int broker_idx, const char *status, size_t &payload_len) const;
+  bool buildPacketPayload(
       const char *direction,
       mesh::Packet *pkt,
       int len,
-      const String &raw_hex,
+      const uint8_t *raw,
+      size_t raw_len,
       float score,
       int rssi,
       float snr,
       uint32_t duration_ms,
-      bool include_radio_metrics) const;
+      bool include_radio_metrics,
+      size_t &payload_len) const;
+
+  char *allocateReporterBuffer(size_t bytes, bool prefer_psram) const;
+  void releaseReporterBuffer(char *buffer) const;
+  bool replaceOfflinePayload(BrokerClient &bc, const char *payload, size_t payload_len);
+  void releasePublishEntry(PublishEntry &entry);
+  size_t publishQueueBrokerByteCap() const;
+  size_t publishQueueTotalByteCap() const;
 
   void printBrokerConfig(Print &out, int idx) const;
   void printBrokerStats(Print &out, int idx) const;
   void maybePrintPeriodicStats();
 
   static esp_err_t mqttEventHandler(esp_mqtt_event_handle_t event);
-  static String jsonEscape(const char *input);
-  static String bytesToHex(const uint8_t *data, size_t len);
   static bool shouldIncludePath(const mesh::Packet *pkt);
   static std::atomic<MqttReporter *> s_instance;
 };
