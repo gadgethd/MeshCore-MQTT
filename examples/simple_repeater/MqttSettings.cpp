@@ -73,7 +73,9 @@ bool validBrokerTopicConfig(const MqttBrokerConfig &cfg) {
 
 } // namespace
 
-MqttSettingsStore::MqttSettingsStore() : _fs(nullptr), _boot_count(0), _prefs_write_hold(false) {
+MqttSettingsStore::MqttSettingsStore()
+    : _fs(nullptr), _boot_count(0), _prefs_write_hold(false),
+      _loaded_source(mqtt_prefs::RecoverySource::None) {
   resetToDefaults();
 }
 
@@ -91,10 +93,9 @@ static void ensureNvsReady() {
 
 // Remove a file only when it exists: LittleFS/VFS logs an error for removing
 // a missing path, which used to spam the serial log on every settings save.
-static void removeIfExists(FILESYSTEM *fs, const char *path) {
-  if (fs != nullptr && path != nullptr && fs->exists(path)) {
-    fs->remove(path);
-  }
+static bool removeIfExists(FILESYSTEM *fs, const char *path) {
+  if (fs == nullptr || path == nullptr || !fs->exists(path)) return true;
+  return fs->remove(path);
 }
 
 void MqttSettingsStore::begin(FILESYSTEM *fs) {
@@ -129,24 +130,61 @@ uint16_t MqttSettingsStore::configVersion() {
 
 bool MqttSettingsStore::load() {
   resetToDefaults();
+  _loaded_source = mqtt_prefs::RecoverySource::None;
   if (_fs == nullptr) return false;
 
-  if (loadPath(CONFIG_PATH)) return true;
-
-  if (_fs->exists(CONFIG_BACKUP_PATH)) {
+  const auto tryPath = [this](const char *path, mqtt_prefs::RecoverySource source,
+                              bool migrate_legacy) {
     resetToDefaults();
-    if (loadPath(CONFIG_BACKUP_PATH)) return true;
+    _loaded_source = source;
+    const LoadResult result = loadPath(path, migrate_legacy);
+    if (result != LoadResult::Loaded) {
+      _loaded_source = mqtt_prefs::RecoverySource::None;
+    }
+    return result;
+  };
+
+  const LoadResult primary_result = tryPath(CONFIG_PATH, mqtt_prefs::RecoverySource::Primary, true);
+  if (primary_result == LoadResult::Loaded) return true;
+  if (primary_result == LoadResult::MigrationFailed) return false;
+
+  // A newer/opaque primary owns its name. Preserve the existing write-hold
+  // semantics and do not let a temp image overwrite it. A known-invalid
+  // primary, however, may be recovered from a complete verified temp first.
+  if (primary_result != LoadResult::Preserve) {
+    const LoadResult temp_result = tryPath(CONFIG_TEMP_PATH, mqtt_prefs::RecoverySource::Temp, false);
+    if (temp_result == LoadResult::Loaded) {
+      if (promoteRecoveredTemp()) {
+        _loaded_source = mqtt_prefs::RecoverySource::Primary;
+        return true;
+      }
+      Serial.println("MQTT settings: verified temp promotion failed; retaining temp for retry");
+      _loaded_source = mqtt_prefs::RecoverySource::None;
+    } else if (temp_result == LoadResult::MigrationFailed) {
+      return false;
+    }
+  }
+
+  const LoadResult backup_result = tryPath(CONFIG_BACKUP_PATH, mqtt_prefs::RecoverySource::Backup, true);
+  if (backup_result == LoadResult::Loaded) return true;
+  if (backup_result == LoadResult::MigrationFailed) return false;
+
+  if (_prefs_write_hold) {
+    // Keep the hold latched even when neither fallback could be decoded.
+    resetToDefaults();
+    return false;
   }
 
   resetToDefaults();
+  _loaded_source = mqtt_prefs::RecoverySource::None;
   return false;
 }
 
-bool MqttSettingsStore::loadPath(const char *path) {
-  if (_fs == nullptr || path == nullptr) return false;
+MqttSettingsStore::LoadResult MqttSettingsStore::loadPath(const char *path, bool migrate_legacy) {
+  if (_fs == nullptr || path == nullptr) return LoadResult::Invalid;
 
   File file = _fs->open(path, "r");
-  if (!file) return false;
+  if (!file) return _fs->exists(path) ? LoadResult::Invalid : LoadResult::Missing;
 
   // Read the header first to determine the stored version (single-sourced
   // through the codec's classifier).
@@ -154,47 +192,50 @@ bool MqttSettingsStore::loadPath(const char *path) {
   size_t hdr_read = file.read(hdr_bytes, sizeof(hdr_bytes));
   file.close();
 
-  if (hdr_read < sizeof(hdr_bytes)) return false;
+  if (hdr_read < sizeof(hdr_bytes)) return LoadResult::Invalid;
   const mqtt_prefs::Kind kind = mqtt_prefs::classify(hdr_bytes, hdr_read);
-  if (kind == mqtt_prefs::Kind::BadMagic) return false;
+  if (kind == mqtt_prefs::Kind::BadMagic) return LoadResult::Invalid;
   uint16_t stored_version = 0;
   for (int i = 0; i < 2; i++) stored_version |= (uint16_t)hdr_bytes[4 + i] << (8 * i);
 
   // Re-read full file
   file = _fs->open(path, "r");
-  if (!file) return false;
+  if (!file) return LoadResult::Invalid;
 
   if (kind == mqtt_prefs::Kind::V1) {
+    if (!migrate_legacy) { file.close(); return LoadResult::Invalid; }
     // Legacy layout: read through a heap copy — the legacy structs are
     // hundreds of bytes to multi-KB and must never be placed on the stack
     // (that is exactly the overflow fixed here).
     PersistedMqttConfigV1 *v1 = (PersistedMqttConfigV1 *)malloc(sizeof(PersistedMqttConfigV1));
-    if (v1 == nullptr) { file.close(); return false; }
+    if (v1 == nullptr) { file.close(); return LoadResult::Invalid; }
     size_t bytes_read = file.read((uint8_t *)v1, sizeof(*v1));
     file.close();
-    if (bytes_read != sizeof(*v1)) { free(v1); return false; }
+    if (bytes_read != sizeof(*v1)) { free(v1); return LoadResult::Invalid; }
     const bool ok = loadV1((const uint8_t *)v1, bytes_read);
     free(v1);
-    return ok;
+    return ok ? LoadResult::Loaded : LoadResult::MigrationFailed;
   }
 
   if (kind == mqtt_prefs::Kind::V2) {
+    if (!migrate_legacy) { file.close(); return LoadResult::Invalid; }
     PersistedMqttConfigV2 *v2 = (PersistedMqttConfigV2 *)malloc(sizeof(PersistedMqttConfigV2));
-    if (v2 == nullptr) { file.close(); return false; }
+    if (v2 == nullptr) { file.close(); return LoadResult::Invalid; }
     size_t bytes_read = file.read((uint8_t *)v2, sizeof(*v2));
     file.close();
-    if (bytes_read != sizeof(*v2)) { free(v2); return false; }
+    if (bytes_read != sizeof(*v2)) { free(v2); return LoadResult::Invalid; }
     const bool ok = loadV2((const uint8_t *)v2, bytes_read);
     free(v2);
-    return ok;
+    return ok ? LoadResult::Loaded : LoadResult::MigrationFailed;
   }
 
   if (kind == mqtt_prefs::Kind::V3) {
+    if (!migrate_legacy) { file.close(); return LoadResult::Invalid; }
     PersistedMqttConfigV3 *v3 = (PersistedMqttConfigV3 *)malloc(sizeof(PersistedMqttConfigV3));
-    if (v3 == nullptr) { file.close(); return false; }
+    if (v3 == nullptr) { file.close(); return LoadResult::Invalid; }
     size_t bytes_read = file.read((uint8_t *)v3, sizeof(*v3));
     file.close();
-    if (bytes_read != sizeof(*v3)) { free(v3); return false; }
+    if (bytes_read != sizeof(*v3)) { free(v3); return LoadResult::Invalid; }
 
     _shared = v3->shared;
     sanitizeShared(_shared);
@@ -203,9 +244,13 @@ bool MqttSettingsStore::loadPath(const char *path) {
       sanitizeBroker(_brokers[i]);
     }
     free(v3);
-    save();
+    if (!save()) {
+      _prefs_write_hold = true;
+      Serial.println("MQTT settings: v3 migration save failed; holding settings writes");
+      return LoadResult::MigrationFailed;
+    }
     Serial.println("MQTT settings: migrated v3 -> v4");
-    return true;
+    return LoadResult::Loaded;
   }
 
   if (kind == mqtt_prefs::Kind::V4) {
@@ -215,19 +260,19 @@ bool MqttSettingsStore::loadPath(const char *path) {
     struct V4Header { uint32_t magic; uint16_t version; uint8_t broker_count; uint8_t reserved; };
     V4Header full_header;
     size_t bytes_read = file.read((uint8_t *)&full_header, sizeof(full_header));
-    if (bytes_read != sizeof(full_header)) { file.close(); return false; }
+    if (bytes_read != sizeof(full_header)) { file.close(); return LoadResult::Invalid; }
 
     bytes_read = file.read((uint8_t *)&_shared, sizeof(_shared));
-    if (bytes_read != sizeof(_shared)) { file.close(); return false; }
+    if (bytes_read != sizeof(_shared)) { file.close(); return LoadResult::Invalid; }
     sanitizeShared(_shared);
 
     for (int i = 0; i < MQTT_MAX_BROKERS; i++) {
       bytes_read = file.read((uint8_t *)&_brokers[i], sizeof(_brokers[i]));
-      if (bytes_read != sizeof(_brokers[i])) { file.close(); return false; }
+      if (bytes_read != sizeof(_brokers[i])) { file.close(); return LoadResult::Invalid; }
       sanitizeBroker(_brokers[i]);
     }
     file.close();
-    return true;
+    return LoadResult::Loaded;
   }
 
   // A file written by a newer firmware that this build does not recognize.
@@ -237,7 +282,7 @@ bool MqttSettingsStore::loadPath(const char *path) {
   Serial.printf("MQTT settings: config version %u not recognized; leaving file untouched (saves disabled until 'mqtt reset')\n",
                 (unsigned int)stored_version);
   file.close();
-  return false;
+  return LoadResult::Preserve;
 }
 
 bool MqttSettingsStore::loadV1(const uint8_t *data, size_t len) {
@@ -252,7 +297,11 @@ bool MqttSettingsStore::loadV1(const uint8_t *data, size_t len) {
   sanitizeBroker(_brokers[0]);
 
   // Save as v4 format
-  save();
+  if (!save()) {
+    _prefs_write_hold = true;
+    Serial.println("MQTT settings: v1 migration save failed; holding settings writes");
+    return false;
+  }
   Serial.println("MQTT settings: migrated v1 -> v4");
   return true;
 }
@@ -270,7 +319,11 @@ bool MqttSettingsStore::loadV2(const uint8_t *data, size_t len) {
   }
 
   // Save as v4 format
-  save();
+  if (!save()) {
+    _prefs_write_hold = true;
+    Serial.println("MQTT settings: v2 migration save failed; holding settings writes");
+    return false;
+  }
   Serial.println("MQTT settings: migrated v2 -> v4");
   return true;
 }
@@ -314,7 +367,10 @@ bool MqttSettingsStore::saveConfigFile() {
   header.broker_count = (uint8_t)brokerCount();
   header.reserved = 0;
 
-  removeIfExists(_fs, CONFIG_TEMP_PATH);
+  if (!removeIfExists(_fs, CONFIG_TEMP_PATH)) {
+    Serial.println("MQTT settings: could not replace existing temporary file");
+    return false;
+  }
   File file = _fs->open(CONFIG_TEMP_PATH, "w");
   if (!file) return false;
   bool write_ok = file.write((const uint8_t *)&header, sizeof(header)) == sizeof(header);
@@ -330,7 +386,9 @@ bool MqttSettingsStore::saveConfigFile() {
   }
   file.close();
   if (!write_ok) {
-    removeIfExists(_fs, CONFIG_TEMP_PATH);
+    if (!removeIfExists(_fs, CONFIG_TEMP_PATH)) {
+      Serial.println("MQTT settings: failed write left an unusable temporary file");
+    }
     return false;
   }
 
@@ -338,7 +396,6 @@ bool MqttSettingsStore::saveConfigFile() {
   // last-known-good file.
   file = _fs->open(CONFIG_TEMP_PATH, "r");
   if (!file) {
-    removeIfExists(_fs, CONFIG_TEMP_PATH);
     return false;
   }
   bool read_ok = true;
@@ -361,28 +418,46 @@ bool MqttSettingsStore::saveConfigFile() {
   }
   file.close();
   if (!read_ok) {
-    removeIfExists(_fs, CONFIG_TEMP_PATH);
+    if (!removeIfExists(_fs, CONFIG_TEMP_PATH)) {
+      Serial.println("MQTT settings: failed verification left an unusable temporary file");
+    }
     return false;
   }
 
-  const bool had_existing = _fs->exists(CONFIG_PATH);
-  if (had_existing) {
-    removeIfExists(_fs, CONFIG_BACKUP_PATH);
-    if (!_fs->rename(CONFIG_PATH, CONFIG_BACKUP_PATH)) {
-      removeIfExists(_fs, CONFIG_TEMP_PATH);
-      return false;
-    }
-  }
-
-  if (!_fs->rename(CONFIG_TEMP_PATH, CONFIG_PATH)) {
-    if (had_existing) {
-      removeIfExists(_fs, CONFIG_PATH);
-      _fs->rename(CONFIG_BACKUP_PATH, CONFIG_PATH);
-    }
-    removeIfExists(_fs, CONFIG_TEMP_PATH);
+  const auto exists = [this](const char *path) { return _fs->exists(path); };
+  const auto remove = [this](const char *path) { return _fs->remove(path); };
+  const auto rename = [this](const char *from, const char *to) {
+    return _fs->rename(from, to);
+  };
+  const mqtt_prefs::RecoveryCommitResult result = mqtt_prefs::commitVerifiedTemp(
+      _loaded_source, CONFIG_PATH, CONFIG_TEMP_PATH, CONFIG_BACKUP_PATH,
+      exists, remove, rename);
+  if (!result.committed) {
+    Serial.printf("MQTT settings: commit failed (%u); retaining verified temp\n",
+                  (unsigned int)result.failure);
     return false;
   }
 
+  _loaded_source = mqtt_prefs::RecoverySource::Primary;
+  return true;
+}
+
+bool MqttSettingsStore::promoteRecoveredTemp() {
+  if (_fs == nullptr) return false;
+
+  const auto exists = [this](const char *path) { return _fs->exists(path); };
+  const auto remove = [this](const char *path) { return _fs->remove(path); };
+  const auto rename = [this](const char *from, const char *to) {
+    return _fs->rename(from, to);
+  };
+  const mqtt_prefs::RecoveryCommitResult result = mqtt_prefs::commitVerifiedTemp(
+      mqtt_prefs::RecoverySource::Temp, CONFIG_PATH, CONFIG_TEMP_PATH, CONFIG_BACKUP_PATH,
+      exists, remove, rename);
+  if (!result.committed) {
+    Serial.printf("MQTT settings: recovery temp promotion failed (%u); temp retained\n",
+                  (unsigned int)result.failure);
+    return false;
+  }
   return true;
 }
 
