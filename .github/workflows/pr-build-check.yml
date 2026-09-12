@@ -7,7 +7,12 @@ on:
       - 'src/**'
       - 'examples/**'
       - 'variants/**'
+      - 'boards/**'
+      - 'arch/**'
+      - 'lib/**'
+      - 'scripts/**'
       - 'platformio.ini'
+      - '.github/actions/setup-build-environment/**'
       - '.github/workflows/pr-build-check.yml'
   push:
     branches: [main, dev]
@@ -15,7 +20,12 @@ on:
       - 'src/**'
       - 'examples/**'
       - 'variants/**'
+      - 'boards/**'
+      - 'arch/**'
+      - 'lib/**'
+      - 'scripts/**'
       - 'platformio.ini'
+      - '.github/actions/setup-build-environment/**'
       - '.github/workflows/pr-build-check.yml'
 
 jobs:
@@ -60,3 +70,18 @@ jobs:
 
       - name: Build ${{ matrix.environment }}
         run: pio run -e ${{ matrix.environment }}
+
+  build-mqtt-ota:
+    name: Build MQTT repeater with opt-in OTA
+    runs-on: ubuntu-latest
+    steps:
+      - name: Clone Repo
+        uses: actions/checkout@v6
+
+      - name: Setup Build Environment
+        uses: ./.github/actions/setup-build-environment
+
+      - name: Compile opt-in MQTT OTA path
+        env:
+          MESHCORE_MQTT_ENABLE_OTA: '1'
+        run: pio run -e Heltec_v3_repeater_mqtt_ota
