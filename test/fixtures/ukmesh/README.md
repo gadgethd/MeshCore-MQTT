@@ -21,11 +21,18 @@ consumers receive.
 - `test/test_ukmesh_payload_fixtures/` (native gtest) asserts the fixtures
   stay well-formed and carry the expected key sets; it runs in CI via
   `pio test -e native`.
-- `scripts/check-ukmesh-payload-fixtures.py` structurally compares *new*
-  captures against these fixtures (added/removed keys, type-class changes;
-  values are ignored). Use it during soaks / after port waves:
+- `scripts/check-ukmesh-payload-fixtures.py` compares *new* captures against
+  these fixtures. It checks added/removed keys, type-class changes, stable
+  scalar values, and every nested array element. Only the explicitly listed
+  volatile telemetry fields are normalized. Malformed capture lines, missing
+  families, and zero checked payloads fail closed; the command prints a count
+  summary. Use it during soaks / after port waves:
 
-      scripts/check-ukmesh-payload-fixtures.py --capture capture.jsonl
+      scripts/check-ukmesh-payload-fixtures.py --capture capture.jsonl \
+          --allow-missing-neighbors-fixture
+
+  The `--skip-other-origins` option is required when a multi-node capture is
+  intentionally filtered by the fixture origin; skipped records are counted.
 
 ## Re-capturing / updating
 
@@ -36,3 +43,9 @@ Capture from the broker side (backend read creds) while the node publishes:
 Update a fixture only deliberately: re-capture, sanitize (see above), replace
 the file, and update the expected key lists in the native test in the same
 change. The contract outranks any port convenience.
+
+The `neighbors` sample is intentionally still unfrozen because no live sample
+has been captured. Until it exists, the checker requires the explicit
+`--allow-missing-neighbors-fixture` acknowledgement in capture mode, loudly
+reports the family as unvalidated, and never treats a neighbors payload as
+checked. Remove that option as soon as `neighbors.sample.json` is added.
