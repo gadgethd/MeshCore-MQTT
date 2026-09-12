@@ -92,6 +92,10 @@ private:
 
   struct BrokerClient {
     esp_mqtt_client_handle_t client;
+    std::atomic<uint32_t> client_generation;
+    std::atomic<uint32_t> pending_connected_generation;
+    std::atomic<uint32_t> pending_terminal_generation;
+    std::atomic<uint32_t> callback_queue_drops;
     volatile bool started;
     volatile bool connected;
     uint32_t next_connect_attempt_ms;
@@ -148,6 +152,7 @@ private:
   struct EventContext {
     MqttReporter *reporter;
     int broker_idx;
+    uint32_t generation;
   };
 
   enum class CallbackEventType : uint8_t {
@@ -165,6 +170,7 @@ private:
     int error_type;
     int error_code;
     esp_mqtt_client_handle_t client;
+    uint32_t generation;
   };
 
   MyMesh *_mesh;
@@ -173,6 +179,10 @@ private:
   BrokerClient _clients[MQTT_MAX_BROKERS];
   EventContext _event_ctx[MQTT_MAX_BROKERS];
   QueueHandle_t _callback_queue;
+  mqtt_reconnect::AttemptGuard _reconnect_guard;
+  std::atomic<uint8_t> _pending_wifi_event;
+  std::atomic<int> _pending_wifi_disconnect_reason;
+  std::atomic<uint32_t> _wifi_callback_queue_drops;
   String _last_rx_raw;
   unsigned long _last_wifi_attempt;
   bool _wifi_attempted;
@@ -230,7 +240,10 @@ private:
   bool anyBrokerConnected() const;
   void enqueueCallbackEvent(const CallbackEvent &event);
   void processCallbackEvents();
+  void handleWifiEvent(const CallbackEvent &event);
+  void processPendingTerminalEvents();
   void handleMqttEvent(const CallbackEvent &event);
+  bool reconcileMqttTerminal(int broker_idx, uint32_t now_ms);
   bool brokerNeedsTimeSync(int idx) const;
   void finishLoop(int64_t started_us);
   void recordReconnectAttempt(BrokerClient &bc, uint32_t now_ms);

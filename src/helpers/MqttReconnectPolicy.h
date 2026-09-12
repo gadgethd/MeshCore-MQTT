@@ -15,8 +15,10 @@
 //   * 3 consecutive failures at the top rung latch a circuit breaker: the
 //     slot is then probed once every 30 minutes; a successful connect clears
 //     the breaker (the ladder still needs the stability gate to reset)
-//   * the first attempt of slot N is delayed by N * 3s so several brokers
-//     never hammer the network stack at the same instant
+//   * every retry for slot N adds N * 3s, and a shared 15s guard permits only
+//     one broker attempt per maintenance pass
+//   * attempts that never receive a terminal callback are reconciled after a
+//     bounded deadline instead of remaining in flight forever
 
 #include <stdint.h>
 
@@ -35,8 +37,17 @@ constexpr uint8_t kBreakerTripFailures = 3;
 // Breaker probe interval.
 constexpr uint32_t kBreakerProbeMs = 1800000UL;
 
-// Spacing between successive slots' first connect attempt.
+// Spacing between successive slots' connect attempts.
 constexpr uint32_t kSlotStaggerMs = 3000UL;
+
+// Minimum spacing between attempts made by different broker slots.
+constexpr uint32_t kReconnectGuardMs = 15000UL;
+
+// Upper bound for an attempt whose CONNECTED/ERROR/DISCONNECTED callback was
+// lost. This is deliberately longer than the SDK's nominal 10s network
+// timeout so normal asynchronous cleanup has time to report its terminal
+// event before the owner loop reconciles it.
+constexpr uint32_t kAttemptTimeoutMs = 60000UL;
 
 constexpr uint32_t ladderDelayMs(uint8_t rung) {
   return kLadderMs[rung < kLadderRungs ? rung : (kLadderRungs - 1)];
@@ -55,8 +66,23 @@ struct State {
   bool attempt_in_flight;    // an attempt is running right now
   bool session_live;         // a session was up (used to count drops once)
   uint32_t connected_since_ms;
+  uint32_t attempt_started_ms;
   uint32_t next_attempt_ms;  // absolute, caller's ms tick domain
 };
+
+struct AttemptGuard {
+  bool armed;
+  uint32_t last_attempt_ms;
+};
+
+inline uint32_t nextGeneration(uint32_t current) {
+  current++;
+  return current == 0 ? 1 : current;
+}
+
+inline bool generationMatches(uint32_t active, uint32_t event) {
+  return active != 0 && active == event;
+}
 
 // First scheduling for a slot at boot/startup: stagger by slot index.
 inline void seedInitial(State &s, uint32_t now_ms, uint8_t slot) {
@@ -64,15 +90,25 @@ inline void seedInitial(State &s, uint32_t now_ms, uint8_t slot) {
   s.next_attempt_ms = now_ms + slotStaggerMs(slot);
 }
 
+inline void onAttemptStarted(State &s, uint32_t now_ms) {
+  s.attempt_pending = false;
+  s.attempt_in_flight = true;
+  s.attempt_started_ms = now_ms;
+}
+
 // Transport reported a live connection.
-inline void onConnected(State &s, uint32_t now_ms) {
+// Returns false for duplicate CONNECTED callbacks.
+inline bool onConnected(State &s, uint32_t now_ms) {
+  if (s.connected) return false;
   s.connected = true;
   s.session_live = true;
   s.attempt_in_flight = false;
   s.attempt_pending = false;
   s.connected_since_ms = now_ms;
   s.breaker = false;
-  s.cap_failures = 0;
+  // Keep cap_failures until the stability gate. Clearing it on CONNACK lets
+  // an accept-then-drop broker evade the breaker forever.
+  return true;
 }
 
 // Periodic tick: heal the ladder once the connection has been stable for
@@ -89,11 +125,11 @@ inline void onTick(State &s, uint32_t now_ms) {
 // A connect attempt failed or an established session dropped. Advances the
 // ladder exactly one step (callers must collapse the ERROR/DISCONNECTED pair
 // into one call) and schedules the next attempt.
-inline void onFailure(State &s, uint32_t now_ms) {
+inline void onFailure(State &s, uint32_t now_ms, uint8_t slot) {
   s.connected = false;
   s.session_live = false;
   s.attempt_in_flight = false;
-  uint32_t delay = ladderDelayMs(s.rung);
+  uint32_t delay = ladderDelayMs(s.rung) + slotStaggerMs(slot);
   if (s.rung < kLadderRungs - 1) {
     s.rung++;
   } else {
@@ -103,6 +139,34 @@ inline void onFailure(State &s, uint32_t now_ms) {
   if (s.breaker) delay = kBreakerProbeMs;
   s.next_attempt_ms = now_ms + delay;
   s.attempt_pending = true;
+}
+
+// ERROR and DISCONNECTED are two observations of the same terminal outcome.
+// Only the first one for an active attempt/session advances the policy.
+inline bool onTerminalEvent(State &s, uint32_t now_ms, uint8_t slot) {
+  if (!s.attempt_in_flight && !s.session_live) return false;
+  onFailure(s, now_ms, slot);
+  return true;
+}
+
+inline bool reconcileAttemptTimeout(State &s, uint32_t now_ms, uint8_t slot) {
+  if (!s.attempt_in_flight ||
+      (uint32_t)(now_ms - s.attempt_started_ms) < kAttemptTimeoutMs) {
+    return false;
+  }
+  onFailure(s, now_ms, slot);
+  return true;
+}
+
+// A restored WiFi link is a new failure domain. Re-probe promptly, retaining
+// top-rung/breaker accounting until a connection passes the stability gate.
+inline void onWifiRecovered(State &s, uint32_t now_ms, uint8_t slot) {
+  if (s.connected) return;
+  if (s.rung > 1) s.rung = 1;
+  s.session_live = false;
+  s.attempt_in_flight = false;
+  s.attempt_pending = true;
+  s.next_attempt_ms = now_ms + slotStaggerMs(slot);
 }
 
 // Ready for the next attempt? (Not connected, no attempt running, and the
@@ -118,6 +182,22 @@ inline uint32_t nextWaitMs(const State &s, uint32_t now_ms) {
   if (s.connected || s.attempt_in_flight || !s.attempt_pending) return 0;
   int32_t remaining = (int32_t)(s.next_attempt_ms - now_ms);
   return remaining > 0 ? (uint32_t)remaining : 0;
+}
+
+inline bool guardAllowsAttempt(const AttemptGuard &guard, uint32_t now_ms,
+                               bool attempted_this_pass) {
+  if (attempted_this_pass) return false;
+  return !guard.armed ||
+         (uint32_t)(now_ms - guard.last_attempt_ms) >= kReconnectGuardMs;
+}
+
+inline void noteAttempt(AttemptGuard &guard, uint32_t now_ms) {
+  guard.armed = true;
+  guard.last_attempt_ms = now_ms;
+}
+
+inline void resetGuard(AttemptGuard &guard) {
+  guard = AttemptGuard{};
 }
 
 // Full reset: used by `mqtt reconnect` and configuration resets. The next
