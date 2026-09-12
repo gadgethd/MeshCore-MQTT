@@ -182,6 +182,58 @@ TEST(MqttPrefsCodec, CopyStrSemantics) {
   EXPECT_EQ(std::string(empty), "");
 }
 
+TEST(MqttPrefsCodec, CopyStrBoundedRejectsUnterminatedSource) {
+  char source[4] = {'A', 'B', 'C', 'D'};
+  char dest[8] = {};
+
+  EXPECT_FALSE(copyStrBounded(dest, sizeof(dest), source, sizeof(source)));
+  EXPECT_EQ(std::string(dest), "ABCD");
+
+  source[sizeof(source) - 1] = '\0';
+  EXPECT_TRUE(copyStrBounded(dest, sizeof(dest), source, sizeof(source)));
+  EXPECT_EQ(std::string(dest), "ABC");
+}
+
+TEST(MqttPrefsCodec, V2MigrationBoundsEveryBrokerField) {
+  LegacyFileV2 legacy;
+  std::memset(&legacy, 'A', sizeof(legacy));
+  legacy.magic = kMagic;
+  legacy.version = 2;
+
+  for (int i = 0; i < kMaxBrokers; i++) {
+    BrokerConfig dst{};
+    mapBrokerFromV2(legacy.brokers[i], dst);
+
+    EXPECT_EQ(cstr(dst.uri, sizeof(dst.uri)).size(), sizeof(legacy.brokers[i].uri) - 1);
+    EXPECT_EQ(cstr(dst.username, sizeof(dst.username)).size(),
+              sizeof(legacy.brokers[i].username) - 1);
+    EXPECT_EQ(cstr(dst.password, sizeof(dst.password)).size(),
+              sizeof(legacy.brokers[i].password) - 1);
+    EXPECT_EQ(cstr(dst.topic_root, sizeof(dst.topic_root)).size(),
+              sizeof(legacy.brokers[i].topic_root));
+    EXPECT_EQ(cstr(dst.iata, sizeof(dst.iata)).size(), sizeof(dst.iata) - 1);
+  }
+}
+
+TEST(MqttPrefsCodec, V2MigrationAcceptsExactFieldBoundaries) {
+  LegacyBrokerConfigV2 legacy{};
+  std::memset(&legacy, 'A', sizeof(legacy));
+  legacy.uri[sizeof(legacy.uri) - 1] = '\0';
+  legacy.username[sizeof(legacy.username) - 1] = '\0';
+  legacy.password[sizeof(legacy.password) - 1] = '\0';
+  legacy.topic_root[sizeof(legacy.topic_root) - 1] = '\0';
+  legacy.iata[sizeof(legacy.iata) - 1] = '\0';
+
+  BrokerConfig dst{};
+  mapBrokerFromV2(legacy, dst);
+
+  EXPECT_EQ(cstr(dst.uri, sizeof(dst.uri)).size(), sizeof(legacy.uri) - 1);
+  EXPECT_EQ(cstr(dst.username, sizeof(dst.username)).size(), sizeof(legacy.username) - 1);
+  EXPECT_EQ(cstr(dst.password, sizeof(dst.password)).size(), sizeof(legacy.password) - 1);
+  EXPECT_EQ(cstr(dst.topic_root, sizeof(dst.topic_root)).size(), sizeof(legacy.topic_root) - 1);
+  EXPECT_EQ(cstr(dst.iata, sizeof(dst.iata)).size(), sizeof(legacy.iata) - 1);
+}
+
 TEST(MqttPrefsCodec, Crc32KnownVector) {
   const char *s = "123456789";
   uint32_t crc = 0xFFFFFFFFUL;

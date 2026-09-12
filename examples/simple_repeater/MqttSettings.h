@@ -224,6 +224,14 @@ public:
   bool brokerCredentialsAllowed(int idx) const;
 
 private:
+  enum class LoadResult : uint8_t {
+    Missing = 0,
+    Invalid,
+    Loaded,
+    Preserve,
+    MigrationFailed,
+  };
+
   // Persisted layouts come from the codec (byte-pinned there); aliases keep
   // the historical names used across the store implementation.
   using PersistedMqttConfigV1 = mqtt_prefs::LegacyFileV1;
@@ -236,6 +244,7 @@ private:
   MqttBrokerConfig _brokers[MQTT_MAX_BROKERS];
   uint32_t _boot_count;
   bool _prefs_write_hold;
+  mqtt_prefs::RecoverySource _loaded_source;
 
   static constexpr uint32_t CONFIG_MAGIC = 0x4D515454; // MQTT
   static constexpr uint16_t CONFIG_VERSION = 4;
@@ -243,10 +252,11 @@ private:
   static constexpr const char *CONFIG_TEMP_PATH = "/mqtt.cfg.tmp";
   static constexpr const char *CONFIG_BACKUP_PATH = "/mqtt.cfg.bak";
 
-  bool loadPath(const char *path);
+  LoadResult loadPath(const char *path, bool migrate_legacy = true);
   bool loadV1(const uint8_t *data, size_t len);
   bool loadV2(const uint8_t *data, size_t len);
   bool saveConfigFile();
+  bool promoteRecoveredTemp();
   bool saveBootCount();
 
   static void sanitizeShared(MqttSharedConfig &cfg);

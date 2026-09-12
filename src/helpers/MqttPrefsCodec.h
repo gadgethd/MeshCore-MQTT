@@ -170,31 +170,54 @@ inline void copyStr(char *dest, const char *src, size_t buf_sz) {
   *dest = 0;
 }
 
+// Copy a legacy field without ever reading past that field's extent.  The
+// source and destination bounds are deliberately independent: a malformed
+// legacy field is truncated at its own boundary before the destination limit
+// is applied.  This follows the source-bounded decoder approach used by the
+// MIT-licensed agessaman/MeshCore implementation, adapted to our layouts.
+inline bool copyStrBounded(char *dest, size_t dest_sz, const char *src, size_t src_sz) {
+  if (dest_sz == 0) return false;
+
+  size_t src_len = 0;
+  while (src_len < src_sz && src[src_len] != '\0') src_len++;
+  const bool terminated = src_len < src_sz;
+  const size_t copy_len = src_len < dest_sz - 1 ? src_len : dest_sz - 1;
+  for (size_t i = 0; i < copy_len; i++) dest[i] = src[i];
+  dest[copy_len] = '\0';
+  return terminated;
+}
+
 // ---- v1 -> v4 mapping ----
 inline void mapSharedFromV1(const LegacyFileV1 &src, SharedConfig &dst) {
-  copyStr(dst.wifi_ssid, src.config.wifi_ssid, sizeof(dst.wifi_ssid));
-  copyStr(dst.wifi_pwd, src.config.wifi_pwd, sizeof(dst.wifi_pwd));
-  copyStr(dst.model, src.config.model, sizeof(dst.model));
-  copyStr(dst.client_version, src.config.client_version, sizeof(dst.client_version));
+  copyStrBounded(dst.wifi_ssid, sizeof(dst.wifi_ssid), src.config.wifi_ssid,
+                 sizeof(src.config.wifi_ssid));
+  copyStrBounded(dst.wifi_pwd, sizeof(dst.wifi_pwd), src.config.wifi_pwd,
+                 sizeof(src.config.wifi_pwd));
+  copyStrBounded(dst.model, sizeof(dst.model), src.config.model,
+                 sizeof(src.config.model));
+  copyStrBounded(dst.client_version, sizeof(dst.client_version), src.config.client_version,
+                 sizeof(src.config.client_version));
 }
 
 inline void mapBrokerFromV1(const LegacyRuntimeConfigV1 &src, BrokerConfig &dst) {
-  copyStr(dst.uri, src.uri, sizeof(dst.uri));
-  copyStr(dst.username, src.username, sizeof(dst.username));
-  copyStr(dst.password, src.password, sizeof(dst.password));
-  copyStr(dst.topic_root, src.topic_root, sizeof(dst.topic_root));
-  copyStr(dst.iata, src.iata, sizeof(dst.iata));
+  copyStrBounded(dst.uri, sizeof(dst.uri), src.uri, sizeof(src.uri));
+  copyStrBounded(dst.username, sizeof(dst.username), src.username, sizeof(src.username));
+  copyStrBounded(dst.password, sizeof(dst.password), src.password, sizeof(src.password));
+  copyStrBounded(dst.topic_root, sizeof(dst.topic_root), src.topic_root,
+                 sizeof(src.topic_root));
+  copyStrBounded(dst.iata, sizeof(dst.iata), src.iata, sizeof(src.iata));
   dst.retain_status = src.retain_status ? 1 : 0;
   dst.enabled = 1;  // v1 had a single, implicitly-enabled broker
 }
 
 // ---- v2 -> v4 mapping ----
 inline void mapBrokerFromV2(const LegacyBrokerConfigV2 &src, BrokerConfig &dst) {
-  copyStr(dst.uri, src.uri, sizeof(dst.uri));
-  copyStr(dst.username, src.username, sizeof(dst.username));
-  copyStr(dst.password, src.password, sizeof(dst.password));
-  copyStr(dst.topic_root, src.topic_root, sizeof(dst.topic_root));
-  copyStr(dst.iata, src.iata, sizeof(dst.iata));
+  copyStrBounded(dst.uri, sizeof(dst.uri), src.uri, sizeof(src.uri));
+  copyStrBounded(dst.username, sizeof(dst.username), src.username, sizeof(src.username));
+  copyStrBounded(dst.password, sizeof(dst.password), src.password, sizeof(src.password));
+  copyStrBounded(dst.topic_root, sizeof(dst.topic_root), src.topic_root,
+                 sizeof(src.topic_root));
+  copyStrBounded(dst.iata, sizeof(dst.iata), src.iata, sizeof(src.iata));
   dst.retain_status = src.retain_status;
   dst.enabled = src.enabled;
 }
@@ -204,14 +227,134 @@ inline void mapBrokerFromV2(const LegacyBrokerConfigV2 &src, BrokerConfig &dst) 
 // configured default (a build-flag concern, not a codec concern).
 inline void mapBrokerFromV3(const LegacyBrokerConfigV3 &src, BrokerConfig &dst,
                             uint32_t neighbor_interval_default) {
-  copyStr(dst.uri, src.uri, sizeof(dst.uri));
-  copyStr(dst.username, src.username, sizeof(dst.username));
-  copyStr(dst.password, src.password, sizeof(dst.password));
-  copyStr(dst.topic_root, src.topic_root, sizeof(dst.topic_root));
-  copyStr(dst.iata, src.iata, sizeof(dst.iata));
+  copyStrBounded(dst.uri, sizeof(dst.uri), src.uri, sizeof(src.uri));
+  copyStrBounded(dst.username, sizeof(dst.username), src.username, sizeof(src.username));
+  copyStrBounded(dst.password, sizeof(dst.password), src.password, sizeof(src.password));
+  copyStrBounded(dst.topic_root, sizeof(dst.topic_root), src.topic_root,
+                 sizeof(src.topic_root));
+  copyStrBounded(dst.iata, sizeof(dst.iata), src.iata, sizeof(src.iata));
   dst.retain_status = src.retain_status;
   dst.enabled = src.enabled;
   dst.neighbor_interval_secs = neighbor_interval_default;
+}
+
+// ---- three-file recovery transaction policy ----
+enum class RecoverySource : uint8_t {
+  None = 0,
+  Primary,
+  Backup,
+  Temp,
+};
+
+enum class RecoveryFileState : uint8_t {
+  Missing = 0,
+  Invalid,
+  Usable,
+  Preserve,
+};
+
+enum class RecoveryAction : uint8_t {
+  None = 0,
+  KeepPrimary,
+  PromoteTemp,
+  PromoteBackup,
+};
+
+// A primary of any kind owns its name. A verified temporary image is preferred
+// only when the primary is absent or invalid; an opaque temporary is never
+// promoted because only a complete, decodable image is safe to adopt.
+inline RecoveryAction selectRecoveryAction(RecoveryFileState primary,
+                                           RecoveryFileState temp,
+                                           RecoveryFileState backup) {
+  if (primary == RecoveryFileState::Usable || primary == RecoveryFileState::Preserve) {
+    return RecoveryAction::KeepPrimary;
+  }
+  if (temp == RecoveryFileState::Usable) return RecoveryAction::PromoteTemp;
+  if (backup == RecoveryFileState::Usable || backup == RecoveryFileState::Preserve) {
+    return RecoveryAction::PromoteBackup;
+  }
+  return RecoveryAction::None;
+}
+
+enum class RecoveryCommitFailure : uint8_t {
+  None = 0,
+  RemoveBackup,
+  DemotePrimary,
+  RemoveInvalidPrimary,
+  PromoteTemp,
+  RollbackPrimary,
+  RollbackBackup,
+};
+
+struct RecoveryCommitResult {
+  bool committed;
+  RecoveryCommitFailure failure;
+  bool rollback_attempted;
+  bool rollback_succeeded;
+  bool temp_retained;
+};
+
+// Commit an already written and verified temporary image. The callbacks are
+// intentionally tiny so the exact file-transition policy can be fault-tested
+// natively without Arduino filesystem objects. A save recovered from backup
+// never removes that backup: the corrupt/non-loaded primary is disposable,
+// while the backup is the only known-good image until the new primary exists.
+template <typename ExistsFn, typename RemoveFn, typename RenameFn>
+inline RecoveryCommitResult commitVerifiedTemp(RecoverySource loaded_from,
+                                               const char *primary_path,
+                                               const char *temp_path,
+                                               const char *backup_path,
+                                               ExistsFn exists,
+                                               RemoveFn remove,
+                                               RenameFn rename) {
+  RecoveryCommitResult result{false, RecoveryCommitFailure::None, false, false, true};
+  const bool primary_exists = exists(primary_path);
+
+  if (loaded_from == RecoverySource::Backup || loaded_from == RecoverySource::Temp) {
+    if (primary_exists && !remove(primary_path)) {
+      result.failure = RecoveryCommitFailure::RemoveInvalidPrimary;
+      return result;
+    }
+    if (!rename(temp_path, primary_path)) {
+      result.failure = RecoveryCommitFailure::PromoteTemp;
+      return result;
+    }
+    result.committed = true;
+    result.temp_retained = false;
+    return result;
+  }
+
+  if (primary_exists) {
+    if (exists(backup_path) && !remove(backup_path)) {
+      result.failure = RecoveryCommitFailure::RemoveBackup;
+      return result;
+    }
+    if (!rename(primary_path, backup_path)) {
+      result.failure = RecoveryCommitFailure::DemotePrimary;
+      return result;
+    }
+  }
+
+  if (rename(temp_path, primary_path)) {
+    result.committed = true;
+    result.temp_retained = false;
+    return result;
+  }
+
+  if (primary_exists) {
+    result.rollback_attempted = true;
+    if (exists(primary_path) && !remove(primary_path)) {
+      result.failure = RecoveryCommitFailure::RollbackPrimary;
+      return result;
+    }
+    if (!rename(backup_path, primary_path)) {
+      result.failure = RecoveryCommitFailure::RollbackBackup;
+      return result;
+    }
+    result.rollback_succeeded = true;
+  }
+  result.failure = RecoveryCommitFailure::PromoteTemp;
+  return result;
 }
 
 // ---- serialization (tests/tooling; on-device composes piecewise over File) ----
