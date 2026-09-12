@@ -11,7 +11,9 @@
 #include <freertos/queue.h>
 #include <mqtt_client.h>
 #include "MqttSettings.h"
+#include "helpers/MqttClockPolicy.h"
 #include "helpers/MqttReconnectPolicy.h"
+#include "helpers/MqttTlsCapPolicy.h"
 
 class MyMesh;
 
@@ -96,8 +98,17 @@ private:
     std::atomic<uint32_t> pending_connected_generation;
     std::atomic<uint32_t> pending_terminal_generation;
     std::atomic<uint32_t> callback_queue_drops;
+    std::atomic<uint8_t> pending_terminal_type;
+    std::atomic<int> pending_error_type;
+    std::atomic<int> pending_error_code;
+    std::atomic<int> pending_tls_last_error;
+    std::atomic<int> pending_tls_stack_error;
+    std::atomic<int> pending_tls_cert_verify_flags;
+    std::atomic<int> pending_transport_sock_errno;
+    std::atomic<int> pending_connect_return_code;
     volatile bool started;
     volatile bool connected;
+    mqtt_tls_cap::Transport effective_transport;
     uint32_t next_connect_attempt_ms;
     unsigned long connected_since_ms;
     char status_topic[384];
@@ -131,6 +142,12 @@ private:
     bool heap_inactive;
     int last_error_type;
     int last_error_code;
+    int last_tls_last_error;
+    int last_tls_stack_error;
+    int last_tls_cert_verify_flags;
+    int last_transport_sock_errno;
+    int last_connect_return_code;
+    uint32_t last_error_at_ms;
     mqtt_reconnect::State recon;
     bool recon_seeded;
   };
@@ -169,6 +186,11 @@ private:
     int wifi_reason;
     int error_type;
     int error_code;
+    int tls_last_error;
+    int tls_stack_error;
+    int tls_cert_verify_flags;
+    int transport_sock_errno;
+    int connect_return_code;
     esp_mqtt_client_handle_t client;
     uint32_t generation;
   };
@@ -191,9 +213,12 @@ private:
   bool _ntp_attempted;
   unsigned long _ntp_sync_started_at;
   bool _ntp_sync_pending;
+  uint32_t _ntp_attempt_generation;
+  uint32_t _ntp_pending_generation;
   bool _time_synced;
   unsigned long _ntp_synced_at_ms;
   uint8_t _ntp_failures;
+  mqtt_clock::Source _clock_source;
   char _origin_id[65];
   char _client_id[40];
   char _reset_reason[20];
@@ -233,6 +258,12 @@ private:
   void processBrokerReconnects(uint32_t now_ms);
   void syncTimeFromNtp();
   void checkNtpSyncComplete();
+  void stopNtpService();
+  void recordClockAcceptance(const mqtt_clock::Acceptance &decision, uint32_t now_ms);
+  bool acceptExistingClockFallback(const char *reason);
+  bool tlsBudgetAllows(int broker_idx, mqtt_tls_cap::Transport requested) const;
+  uint8_t liveTlsCount() const;
+  uint8_t tlsCap() const;
   void publishStatus(int idx, const char *status);
   bool enqueuePublish(int idx, const char *topic, const String &payload, uint8_t qos, bool retain, bool is_status);
   void drainPublishQueue(int idx, uint8_t max_publishes = MQTT_PUBLISHES_PER_LOOP);
