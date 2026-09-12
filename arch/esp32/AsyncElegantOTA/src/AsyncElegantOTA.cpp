@@ -6,6 +6,18 @@ void AsyncElegantOtaClass::setID(const char* id){
     _id = id;
 }
 
+void AsyncElegantOtaClass::setFlashGate(FlashGate gate){
+    _flashGate = gate;
+}
+
+void AsyncElegantOtaClass::abort(){
+    if (_uploadInProgress || Update.isRunning()) {
+        Update.abort();
+    }
+    _uploadInProgress = false;
+    _uploadSucceeded = false;
+}
+
 void AsyncElegantOtaClass::begin(AsyncWebServer *server, const char* username, const char* password){
     _server = server;
 
@@ -51,11 +63,12 @@ void AsyncElegantOtaClass::begin(AsyncWebServer *server, const char* username, c
         }
         // the request handler is triggered after the upload has finished... 
         // create the response, add header, and send response
-        AsyncWebServerResponse *response = request->beginResponse((Update.hasError())?500:200, "text/plain", (Update.hasError())?"FAIL":"OK");
+        const bool upload_ok = _uploadSucceeded && !Update.hasError();
+        AsyncWebServerResponse *response = request->beginResponse(upload_ok?200:500, "text/plain", upload_ok?"OK":"FAIL");
         response->addHeader("Connection", "close");
         response->addHeader("Access-Control-Allow-Origin", "*");
         request->send(response);
-        restart();
+        if (upload_ok) restart();
     }, [&](AsyncWebServerRequest *request, String filename, size_t index, uint8_t *data, size_t len, bool final) {
         //Upload handler chunks in data
         if(_authRequired){
@@ -65,12 +78,19 @@ void AsyncElegantOtaClass::begin(AsyncWebServer *server, const char* username, c
         }
 
         if (!index) {
+            abort();
             if(!request->hasParam("MD5", true)) {
                 return request->send(400, "text/plain", "MD5 parameter missing");
             }
 
             if(!Update.setMD5(request->getParam("MD5", true)->value().c_str())) {
                 return request->send(400, "text/plain", "MD5 parameter invalid");
+            }
+
+            // The server is not proof that MQTT teardown completed. Check the
+            // lifecycle barrier immediately before allocating/writing flash.
+            if (_flashGate != nullptr && !_flashGate()) {
+                return request->send(503, "text/plain", "MQTT stop not verified; OTA refused");
             }
 
             #if defined(ESP8266)
@@ -84,22 +104,36 @@ void AsyncElegantOtaClass::begin(AsyncWebServer *server, const char* username, c
                 if (!Update.begin(UPDATE_SIZE_UNKNOWN, cmd)) { // Start with max available size
             #endif
                 Update.printError(Serial);
+                abort();
                 return request->send(400, "text/plain", "OTA could not begin");
             }
+            _uploadInProgress = true;
         }
 
         // Write chunked data to the free sketch space
         if(len){
+            if (!_uploadInProgress || (_flashGate != nullptr && !_flashGate())) {
+                abort();
+                return request->send(503, "text/plain", "MQTT stop not verified; OTA refused");
+            }
             if (Update.write(data, len) != len) {
-                return request->send(400, "text/plain", "OTA could not begin");
+                abort();
+                return request->send(400, "text/plain", "OTA write failed");
             }
         }
             
         if (final) { // if the final flag is set then this is the last frame of data
+            if (!_uploadInProgress || (_flashGate != nullptr && !_flashGate())) {
+                abort();
+                return request->send(503, "text/plain", "MQTT stop not verified; OTA refused");
+            }
             if (!Update.end(true)) { //true to set the size to the current progress
                 Update.printError(Serial);
+                abort();
                 return request->send(400, "text/plain", "Could not end OTA");
             }
+            _uploadInProgress = false;
+            _uploadSucceeded = true;
         }else{
             return;
         }

@@ -12,12 +12,9 @@
 // fake clock and a recording Ops double, the same way MqttReconnectPolicy.h
 // is tested.
 //
-// Scope boundary (spec stage): this header is the SPEC and the test seam. It
-// is NOT yet wired into MqttReporter. The wiring wave supplies ESP-MQTT-backed
-// Ops (startClients = create/connect enabled slots, deliverStop = orderly
-// per-slot teardown, releaseResources = destroy clients/allocations) and
-// replaces the current ad-hoc teardown-before-OTA/deep-sleep paths with this
-// cooperative lifecycle, sized by stop-timeout characterisation on hardware.
+// MqttReporter supplies the production Ops adapter. The same dependency seam
+// remains usable from host tests so ownership and flash-gate behavior stay
+// deterministic without Arduino, FreeRTOS, WiFi, or ESP-MQTT.
 //
 // Behavior source: every transition and invariant encoded here is derived from
 // the failure modes we have actually observed in the field and on the bench
@@ -39,6 +36,11 @@ enum class State : uint8_t {
   Running,
   StopRequested,
   Stopping,
+  // The stop deadline expired without an acknowledgement. The reporter may
+  // still own clients or be inside the SDK, so nothing it can reach may be
+  // released and no new lifecycle may start. A late acknowledgement is the
+  // only in-boot transition out of this state (post-F01 ownership rule).
+  StopUnproven,
 };
 
 // Events driven either by the owner (loop task) or by the reporter itself
@@ -60,8 +62,8 @@ enum class Event : uint8_t {
 //  - start_clients:     create/connect the clients for enabled slots.
 //  - deliver_stop:      deliver the stop request (cessation of new work).
 //  - release_resources: clients, outbox buffers and allocations may now be
-//                       freed. Fires only after a completed/forced stop or an
-//                       init-failure rollback - never mid-run.
+//                       freed. Fires only after an acknowledged stop or an
+//                       init-failure rollback - never on an unproven timeout.
 //  - ota_release:       the OTA barrier's completion acknowledgement is now
 //                       available (a stop reached a terminal state).
 struct Effects {
@@ -135,10 +137,14 @@ inline Result apply(State s, Event e) {
           r.accepted = true;
           break;
         case Event::StopAcknowledged:
-        case Event::StopTimedOut:
           r.next = State::Stopped;
           r.effects.release_resources = true;
           r.effects.ota_release = true;
+          r.accepted = true;
+          break;
+        case Event::StopTimedOut:
+          r.next = State::StopUnproven;
+          r.effects.ota_release = true;  // wake the barrier so it can abort
           r.accepted = true;
           break;
         default:
@@ -150,14 +156,30 @@ inline Result apply(State s, Event e) {
     case State::Stopping:
       switch (e) {
         case Event::StopAcknowledged:
-        case Event::StopTimedOut:
           r.next = State::Stopped;
           r.effects.release_resources = true;
           r.effects.ota_release = true;
           r.accepted = true;
           break;
+        case Event::StopTimedOut:
+          r.next = State::StopUnproven;
+          r.effects.ota_release = true;
+          r.accepted = true;
+          break;
         default:
           break;
+      }
+      break;
+
+    case State::StopUnproven:
+      // The deadline is an availability bound, not proof that teardown failed.
+      // A late acknowledgement is safe to honor because the reporter emits it
+      // only after its ordered teardown returns. It releases withheld resources
+      // and permits restart, but the dirty flash latch remains set.
+      if (e == Event::StopAcknowledged) {
+        r.next = State::Stopped;
+        r.effects.release_resources = true;
+        r.accepted = true;
       }
       break;
   }
@@ -182,16 +204,27 @@ inline bool mayTouchOwnedState(State s) { return s != State::Stopped; }
 // A restart is safe only from a completed stop.
 inline bool mayRestart(State s) { return s == State::Stopped; }
 
+inline bool isStopUnproven(State s) { return s == State::StopUnproven; }
+
 inline bool isStopInProgress(State s) {
   return s == State::StopRequested || s == State::Stopping;
 }
 
-// Bounded stop window for a given number of connected slots: our wss teardown
-// is sequential per slot and measured ~5-6 s per slot (agessaman Phase-0
-// characterisation on the same upstream stack; TO BE re-characterised on our
-// build in the wiring wave). Callers may override via setStopTimeoutMs().
-inline uint32_t suggestedStopTimeoutMs(uint8_t connected_slots) {
-  return 2000u + 6000u * (uint32_t)connected_slots;
+// Conservative post-audit stop window. The reference hardware evidence found
+// roughly 5-6 seconds per sequential WSS slot; its corrected policy uses a
+// five-second base plus eight seconds for every owned slot, clamped to at least
+// one slot. Count allocated/started/connecting clients, not only connected
+// sockets. Re-characterise this bound on our hardware before an OTA release.
+constexpr uint32_t MQTT_STOP_BASE_TIMEOUT_MS = 5000u;
+constexpr uint32_t MQTT_STOP_PER_SLOT_TIMEOUT_MS = 8000u;
+static_assert(MQTT_STOP_BASE_TIMEOUT_MS >= 5000u,
+              "MQTT stop base timeout must retain the audited safety margin");
+static_assert(MQTT_STOP_PER_SLOT_TIMEOUT_MS >= 8000u,
+              "MQTT stop per-slot timeout must retain the audited safety margin");
+
+constexpr uint32_t suggestedStopTimeoutMs(uint8_t owned_slots) {
+  return MQTT_STOP_BASE_TIMEOUT_MS +
+         MQTT_STOP_PER_SLOT_TIMEOUT_MS * (uint32_t)(owned_slots == 0 ? 1 : owned_slots);
 }
 
 inline const char* stateName(State s) {
@@ -201,6 +234,7 @@ inline const char* stateName(State s) {
     case State::Running:       return "Running";
     case State::StopRequested: return "StopRequested";
     case State::Stopping:      return "Stopping";
+    case State::StopUnproven:  return "StopUnproven";
   }
   return "?";
 }
@@ -249,10 +283,10 @@ struct Ops {
 // timeout. Idempotent start/stop; safe restart after a completed stop.
 class Coordinator {
  public:
-  // stop_timeout_ms bounds how long a requested stop may run before the
-  // reviewed force-kill fallback fires. It is injected (not a constant) and
-  // may be updated per stop via setStopTimeoutMs() - size it to the current
-  // connected-slot count before requestStop() (see suggestedStopTimeoutMs()).
+  // stop_timeout_ms bounds how long a requested stop may run before ownership
+  // becomes unproven and the flash barrier aborts. It is injected and may be
+  // updated per stop via setStopTimeoutMs() - size it to every currently owned
+  // client before requestStop() (see suggestedStopTimeoutMs()).
   Coordinator(Ops& ops, uint32_t stop_timeout_ms)
       : _ops(ops), _stop_timeout_ms(stop_timeout_ms) {}
 
@@ -266,15 +300,16 @@ class Coordinator {
   bool isStopInProgress() const {
     return MQTTLifecycle::isStopInProgress(_state);
   }
-  // A restart is safe from a completed stop. A stop that reached Stopped via
-  // the timeout fallback still allows restart (the reporter is down); only
-  // OTA flashing is withheld after a dirty stop.
+  // A restart is safe only from a proven stop. StopUnproven retains ownership
+  // and refuses a second start until the original teardown acknowledges late.
   bool mayRestart() const { return MQTTLifecycle::mayRestart(_state); }
-  // OTA erase/write (and deep-sleep entry) is permitted only after a CLEAN
-  // stop. A timed-out stop leaves ownership uncertain, so flashing stays
-  // blocked until a clean start/stop cycle clears the latch.
+  bool isStopUnproven() const { return MQTTLifecycle::isStopUnproven(_state); }
+  // OTA erase/write (and deep-sleep entry) is permitted only after this
+  // coordinator has observed a CLEAN stop acknowledgement. The fresh Stopped
+  // state is deliberately fail-closed: merely having no active lifecycle is
+  // not proof that the production owner completed teardown.
   bool mayBeginFlash() const {
-    return _state == State::Stopped && !_stop_timed_out;
+    return _state == State::Stopped && _clean_stop_acknowledged;
   }
 
   // Update the stop-timeout bound. Call before requestStop() to size the
@@ -307,10 +342,15 @@ class Coordinator {
     _state = r.next;
     if (e == Event::StartRequested) {
       _stop_timed_out = false;  // a fresh start clears the dirty-stop latch
+      _clean_stop_acknowledged = false;
     } else if (e == Event::StopRequested) {
       _stop_request_ms = _ops.nowMs();  // arm the timeout window
+      _clean_stop_acknowledged = false;
     } else if (e == Event::StopTimedOut) {
       _stop_timed_out = true;
+      _clean_stop_acknowledged = false;
+    } else if (e == Event::StopAcknowledged && !_stop_timed_out) {
+      _clean_stop_acknowledged = true;
     }
 
     if (r.effects.start_clients) _ops.startClients();
@@ -325,6 +365,7 @@ class Coordinator {
   State _state = State::Stopped;
   uint32_t _stop_request_ms = 0;
   bool _stop_timed_out = false;
+  bool _clean_stop_acknowledged = false;
 };
 
 }  // namespace MQTTLifecycle
