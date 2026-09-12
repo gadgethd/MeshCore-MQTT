@@ -11,6 +11,7 @@
 #include <freertos/queue.h>
 #include <mqtt_client.h>
 #include "MqttSettings.h"
+#include "helpers/MQTTLifecycle.h"
 #include "helpers/MqttClockPolicy.h"
 #include "helpers/MqttPublishGuard.h"
 #include "helpers/MqttReconnectPolicy.h"
@@ -47,13 +48,22 @@ class MyMesh;
   #define MQTT_CALLBACK_QUEUE_DEPTH 32
 #endif
 
-class MqttReporter {
+class MqttReporter : private MQTTLifecycle::Ops {
 public:
   MqttReporter(MyMesh &mesh, mesh::RTCClock &clock);
   ~MqttReporter();
 
   void begin(FILESYSTEM *fs);
+  bool end();
   void loop();
+
+  // OTA lifecycle seam used by ESP32Board. stopForOTA() returns true only when
+  // ordered client teardown acknowledged inside the audited timeout. A dirty
+  // or unproven stop remains fail-closed; resume is possible only after proof.
+  bool stopForOTA();
+  bool resumeAfterOTAAbort();
+  bool canFlashAfterStop() const;
+  static MqttReporter *activeInstance();
 
   void publishRxRaw(const uint8_t raw[], int len);
   void clearPendingRxRaw();
@@ -208,6 +218,13 @@ private:
   MyMesh *_mesh;
   mesh::RTCClock *_clock;
   MqttSettingsStore _settings;
+  MQTTLifecycle::Coordinator _lifecycle;
+  FILESYSTEM *_filesystem;
+  bool _settings_initialized;
+  bool _wifi_event_registered;
+  bool _stop_requested;
+  std::atomic<bool> _callbacks_allowed;
+  std::atomic<bool> _flash_allowed;
   BrokerClient _clients[MQTT_MAX_BROKERS];
   EventContext _event_ctx[MQTT_MAX_BROKERS];
   QueueHandle_t _callback_queue;
@@ -268,6 +285,17 @@ private:
   NeighborEntry _neighbors[NEIGHBOR_CAPACITY];
 
   void ensureIdentityStrings();
+  uint8_t ownedClientCount() const;
+  void serviceStopRequest();
+
+  // MQTTLifecycle::Ops. These run only on the reporter's owner loop task;
+  // callbacks observe the atomically published callback/flash gates.
+  uint32_t nowMs() override;
+  void startClients() override;
+  void deliverStop() override;
+  void releaseResources() override;
+  void onStopComplete(bool clean) override;
+
   void resetBrokerConnection(int idx);
   void resetAllConnections();
   bool connectWiFi();

@@ -66,6 +66,10 @@ static_assert(MQTT_MAX_PUBLISHES_PER_LOOP <= mqtt_publish::kDefaultMaxPublishesP
 static_assert(MAX_TRANS_UNIT <= UINT8_MAX, "packet wire length no longer fits writeTo()");
 static_assert(MAX_PACKET_PAYLOAD == 184, "revisit MQTT packet payload-size assertions");
 static_assert(MAX_PATH_SIZE == 64, "revisit MQTT path-size assertions");
+static_assert(
+    MQTTLifecycle::suggestedStopTimeoutMs(MQTT_MAX_BROKERS) >=
+        5000u + 8000u * MQTT_MAX_BROKERS,
+    "MQTT lifecycle timeout must preserve the audited 5+8n second floor");
 
 // NTP retry backoff: 30 s, 60 s, 120 s, 240 s (capped), by consecutive failures.
 // (Not constexpr: the statement body is not allowed under the ESP toolchain's
@@ -263,7 +267,15 @@ String buildPacketsTopicPath(const char *topic_root, const char *iata, const cha
 } // namespace
 
 MqttReporter::MqttReporter(MyMesh &mesh, mesh::RTCClock &clock)
-    : _mesh(&mesh), _clock(&clock) {
+    : _mesh(&mesh),
+      _clock(&clock),
+      _lifecycle(*this, MQTTLifecycle::suggestedStopTimeoutMs(0)),
+      _filesystem(nullptr),
+      _settings_initialized(false),
+      _wifi_event_registered(false),
+      _stop_requested(false),
+      _callbacks_allowed(false),
+      _flash_allowed(false) {
   _last_wifi_attempt = 0;
   _wifi_attempted = false;
   _last_stats_print = 0;
@@ -425,9 +437,136 @@ MqttReporter::~MqttReporter() {
 }
 
 void MqttReporter::begin(FILESYSTEM *fs) {
-  _settings.begin(fs);
+  if (!_settings_initialized) {
+    if (fs == nullptr) {
+      Serial.println("MQTT reporter: begin refused without a filesystem");
+      return;
+    }
+    _filesystem = fs;
+    _settings.begin(fs);
+    _config_crc32 = _settings.configCrc32();
+    _boot_count = _settings.incrementBootCount();
+    StrHelper::strncpy(_reset_reason, resetReasonString((int)esp_reset_reason()), sizeof(_reset_reason));
+
+    if (!_wifi_event_registered) {
+      WiFi.onEvent([](WiFiEvent_t event, WiFiEventInfo_t info) {
+        MqttReporter *self = s_instance.load(std::memory_order_acquire);
+        if (self == nullptr) return;
+        CallbackEvent callback = {};
+        callback.broker_idx = -1;
+        if (event == ARDUINO_EVENT_WIFI_STA_DISCONNECTED) {
+          callback.type = CallbackEventType::WifiDisconnected;
+          callback.wifi_reason = info.wifi_sta_disconnected.reason;
+          self->enqueueCallbackEvent(callback);
+        } else if (event == ARDUINO_EVENT_WIFI_STA_GOT_IP) {
+          callback.type = CallbackEventType::WifiGotIp;
+          self->enqueueCallbackEvent(callback);
+        }
+      });
+      _wifi_event_registered = true;
+    }
+
+    const MqttSharedConfig &shared = _settings.shared();
+    Serial.printf("MQTT reporter: WiFi SSID='%s'\n", shared.wifi_ssid);
+    for (int i = 0; i < MQTT_MAX_BROKERS; i++) {
+      const MqttBrokerConfig &b = _settings.broker(i);
+      if (b.enabled && b.uri[0] != '\0') {
+        String safe_uri = sanitizeBrokerUri(b.uri);
+        Serial.printf("MQTT reporter: broker %d URI='%s'\n", i + 1, safe_uri.c_str());
+      }
+    }
+    _settings_initialized = true;
+  }
+
+  if (_lifecycle.state() == MQTTLifecycle::State::Running ||
+      _lifecycle.state() == MQTTLifecycle::State::Starting) {
+    return;  // repeated begin is idempotent
+  }
+  if (!_lifecycle.mayRestart()) {
+    Serial.printf("MQTT reporter: begin refused while lifecycle is %s\n",
+                  MQTTLifecycle::stateName(_lifecycle.state()));
+    return;
+  }
+  if (_lifecycle.requestStart()) {
+    _lifecycle.onStarted();
+  }
+}
+
+bool MqttReporter::end() {
+  if (_lifecycle.state() == MQTTLifecycle::State::Stopped) {
+    return canFlashAfterStop();
+  }
+  if (_lifecycle.isStopUnproven()) return false;
+
+  const uint8_t owned_slots = ownedClientCount();
+  _lifecycle.setStopTimeoutMs(MQTTLifecycle::suggestedStopTimeoutMs(owned_slots));
+  Serial.printf("MQTT reporter: stopping %u owned slot(s), timeout %lu ms\n",
+                (unsigned int)owned_slots,
+                (unsigned long)_lifecycle.stopTimeoutMs());
+  if (!_lifecycle.requestStop()) return false;
+
+  // This reporter is loop-task-owned rather than a separate MQTT task. Drive
+  // its ordered teardown here so the OTA command cannot expose an upload
+  // server until the acknowledgement has been observed.
+  serviceStopRequest();
+  return canFlashAfterStop();
+}
+
+bool MqttReporter::stopForOTA() { return end(); }
+
+bool MqttReporter::resumeAfterOTAAbort() {
+  if (_lifecycle.state() == MQTTLifecycle::State::Running) return true;
+  if (!_lifecycle.mayRestart() || _filesystem == nullptr) {
+    Serial.printf("MQTT reporter: OTA-abort resume refused while lifecycle is %s\n",
+                  MQTTLifecycle::stateName(_lifecycle.state()));
+    return false;
+  }
+  begin(_filesystem);
+  return _lifecycle.state() == MQTTLifecycle::State::Running;
+}
+
+bool MqttReporter::canFlashAfterStop() const {
+  return _flash_allowed.load(std::memory_order_acquire);
+}
+
+MqttReporter *MqttReporter::activeInstance() {
+  return s_instance.load(std::memory_order_acquire);
+}
+
+extern "C" bool meshcore_mqtt_stop_for_ota() {
+  MqttReporter *reporter = MqttReporter::activeInstance();
+  return reporter != nullptr && reporter->stopForOTA();
+}
+
+extern "C" bool meshcore_mqtt_can_flash_after_stop() {
+  MqttReporter *reporter = MqttReporter::activeInstance();
+  return reporter != nullptr && reporter->canFlashAfterStop();
+}
+
+extern "C" bool meshcore_mqtt_resume_after_ota_abort() {
+  MqttReporter *reporter = MqttReporter::activeInstance();
+  return reporter != nullptr && reporter->resumeAfterOTAAbort();
+}
+
+uint8_t MqttReporter::ownedClientCount() const {
+  uint8_t count = 0;
+  for (int i = 0; i < MQTT_MAX_BROKERS; i++) {
+    if (_clients[i].client != nullptr || _clients[i].started) count++;
+  }
+  return count;
+}
+
+uint32_t MqttReporter::nowMs() { return (uint32_t)millis(); }
+
+void MqttReporter::startClients() {
+  _flash_allowed.store(false, std::memory_order_release);
+  _callbacks_allowed.store(false, std::memory_order_release);
+  _stop_requested = false;
   _psram_available = psramFound();
-  _build_buffer = allocateReporterBuffer(mqtt_publish::kBuildBufferBytes, true);
+
+  if (_build_buffer == nullptr) {
+    _build_buffer = allocateReporterBuffer(mqtt_publish::kBuildBufferBytes, true);
+  }
   if (_build_buffer == nullptr) {
     Serial.println("MQTT reporter: checked payload buffer allocation failed; publishes disabled");
   } else {
@@ -435,50 +574,90 @@ void MqttReporter::begin(FILESYSTEM *fs) {
                   (unsigned int)mqtt_publish::kBuildBufferBytes,
                   _psram_available ? "PSRAM" : "internal");
   }
-  _config_crc32 = _settings.configCrc32();
-  _boot_count = _settings.incrementBootCount();
-  StrHelper::strncpy(_reset_reason, resetReasonString((int)esp_reset_reason()), sizeof(_reset_reason));
-  ensureIdentityStrings();
-  _callback_queue = xQueueCreate(MQTT_CALLBACK_QUEUE_DEPTH, sizeof(CallbackEvent));
+
   if (_callback_queue == nullptr) {
-    Serial.println("MQTT reporter: callback queue allocation failed; terminal fallback active");
+    _callback_queue = xQueueCreate(MQTT_CALLBACK_QUEUE_DEPTH, sizeof(CallbackEvent));
+    if (_callback_queue == nullptr) {
+      Serial.println("MQTT reporter: callback queue allocation failed; terminal fallback active");
+    }
+  } else {
+    CallbackEvent stale;
+    while (xQueueReceive(_callback_queue, &stale, 0) == pdTRUE) {}
   }
+  _pending_wifi_event.store(0, std::memory_order_release);
+  for (int i = 0; i < MQTT_MAX_BROKERS; i++) {
+    _clients[i].pending_connected_generation.store(0, std::memory_order_release);
+    _clients[i].pending_terminal_generation.store(0, std::memory_order_release);
+  }
+
+  _identity_strings_dirty = true;
+  ensureIdentityStrings();
   esp_log_level_set("MQTT_CLIENT", ESP_LOG_INFO);
   esp_log_level_set("TRANSPORT_BASE", ESP_LOG_INFO);
   esp_log_level_set("TRANSPORT_WS", ESP_LOG_INFO);
   esp_log_level_set("TRANS_SSL", ESP_LOG_INFO);
   esp_log_level_set("esp-tls", ESP_LOG_INFO);
+  _callbacks_allowed.store(true, std::memory_order_release);
   WiFi.mode(WIFI_STA);
   WiFi.setAutoReconnect(true);
   WiFi.setSleep(false);
-  WiFi.onEvent([](WiFiEvent_t event, WiFiEventInfo_t info) {
-    MqttReporter *self = s_instance.load(std::memory_order_acquire);
-    if (self == nullptr) return;
-    CallbackEvent callback = {};
-    callback.broker_idx = -1;
-    if (event == ARDUINO_EVENT_WIFI_STA_DISCONNECTED) {
-      callback.type = CallbackEventType::WifiDisconnected;
-      callback.wifi_reason = info.wifi_sta_disconnected.reason;
-      self->enqueueCallbackEvent(callback);
-    } else if (event == ARDUINO_EVENT_WIFI_STA_GOT_IP) {
-      callback.type = CallbackEventType::WifiGotIp;
-      self->enqueueCallbackEvent(callback);
-    }
-  });
-
-  const MqttSharedConfig &shared = _settings.shared();
-  Serial.printf("MQTT reporter: WiFi SSID='%s'\n", shared.wifi_ssid);
-  for (int i = 0; i < MQTT_MAX_BROKERS; i++) {
-    const MqttBrokerConfig &b = _settings.broker(i);
-    if (b.enabled && b.uri[0] != '\0') {
-      String safe_uri = sanitizeBrokerUri(b.uri);
-      Serial.printf("MQTT reporter: broker %d URI='%s'\n", i + 1, safe_uri.c_str());
-    }
-  }
   connectWiFi();
 }
 
+void MqttReporter::deliverStop() {
+  _flash_allowed.store(false, std::memory_order_release);
+  _stop_requested = true;
+}
+
+void MqttReporter::releaseResources() {
+  // The callback mailbox is lifecycle-stable because the Arduino WiFi handler
+  // remains registered for the object's lifetime. Stop admitting events before
+  // releasing all restartable MQTT buffers it could otherwise reference.
+  _callbacks_allowed.store(false, std::memory_order_release);
+  for (int i = 0; i < MQTT_MAX_BROKERS; i++) {
+    clearPublishQueue(i);
+    releaseReporterBuffer(_clients[i].offline_payload);
+    _clients[i].offline_payload = nullptr;
+    _clients[i].offline_payload_len = 0;
+  }
+  releaseReporterBuffer(_build_buffer);
+  _build_buffer = nullptr;
+  _identity_strings_dirty = true;
+  _pending_wifi_event.store(0, std::memory_order_release);
+}
+
+void MqttReporter::onStopComplete(bool clean) {
+  _flash_allowed.store(clean, std::memory_order_release);
+  Serial.printf("MQTT reporter: stop %s\n",
+                clean ? "acknowledged; OTA gate open"
+                      : "unproven; resources retained and OTA gate closed");
+}
+
+void MqttReporter::serviceStopRequest() {
+  if (!_stop_requested) return;
+  _lifecycle.tick();
+  if (_lifecycle.state() == MQTTLifecycle::State::StopRequested) {
+    _lifecycle.onStopBegan();
+  }
+  if (!_lifecycle.isStopInProgress() && !_lifecycle.isStopUnproven()) return;
+
+  stopNtpService();
+  for (int i = 0; i < MQTT_MAX_BROKERS; i++) {
+    if (_clients[i].client != nullptr || _clients[i].started) {
+      resetBrokerConnection(i);
+      // A slow SDK teardown can cross the bound. StopTimedOut itself releases
+      // nothing; completing the remaining owner-task teardown then supplies a
+      // safe late acknowledgement, while the original OTA gate stays dirty.
+      _lifecycle.tick();
+    }
+  }
+  _stop_requested = false;
+  _lifecycle.onStopped();
+}
+
 void MqttReporter::loop() {
+  serviceStopRequest();
+  if (!_lifecycle.acceptsNewWork()) return;
   const int64_t loop_started_us = esp_timer_get_time();
   _loop_iterations++;
   uint32_t free_heap = ESP.getFreeHeap();
@@ -581,6 +760,10 @@ void MqttReporter::finishLoop(int64_t started_us) {
 }
 
 void MqttReporter::publishRxRaw(const uint8_t raw[], int len) {
+  if (!_lifecycle.acceptsNewWork()) {
+    _last_rx_raw_len = 0;
+    return;
+  }
   if (raw == nullptr || len <= 0 || len > MAX_TRANS_UNIT) {
     _last_rx_raw_len = 0;
     return;
@@ -594,6 +777,10 @@ void MqttReporter::clearPendingRxRaw() {
 }
 
 void MqttReporter::publishRxPacket(mesh::Packet *pkt, int len, float score, int rssi, float snr, uint32_t duration_ms) {
+  if (!_lifecycle.acceptsNewWork()) {
+    _last_rx_raw_len = 0;
+    return;
+  }
   if (pkt == nullptr) return;
   _rx_publish_calls++;
   _last_rx_rssi = rssi;
@@ -632,6 +819,7 @@ void MqttReporter::publishRxPacket(mesh::Packet *pkt, int len, float score, int 
 }
 
 void MqttReporter::publishTxPacket(mesh::Packet *pkt, int len) {
+  if (!_lifecycle.acceptsNewWork()) return;
   if (pkt == nullptr) return;
   _tx_publish_calls++;
 
@@ -674,6 +862,7 @@ void MqttReporter::publishTxPacket(mesh::Packet *pkt, int len) {
 }
 
 void MqttReporter::publishTxFail(mesh::Packet *pkt, int len, int reason) {
+  if (!_lifecycle.acceptsNewWork()) return;
   if (pkt == nullptr) return;
   _tx_fail_publish_calls++;
   _last_tx_fail_reason = reason;
@@ -821,6 +1010,7 @@ void MqttReporter::resetAllConnections() {
 }
 
 bool MqttReporter::connectWiFi() {
+  if (!_lifecycle.acceptsNewWork()) return false;
   const MqttSharedConfig &shared = _settings.shared();
   if (WiFi.status() == WL_CONNECTED) return true;
   if (shared.wifi_ssid[0] == '\0') return false;
@@ -900,6 +1090,7 @@ uint8_t MqttReporter::tlsCap() const {
 }
 
 void MqttReporter::processBrokerReconnects(uint32_t now_ms) {
+  if (!_lifecycle.acceptsNewWork()) return;
   bool attempted_this_pass = false;
   for (int i = 0; i < MQTT_MAX_BROKERS; i++) {
     const MqttBrokerConfig &b = _settings.broker(i);
@@ -997,6 +1188,7 @@ void MqttReporter::processBrokerReconnects(uint32_t now_ms) {
 }
 
 bool MqttReporter::connectMQTT(int idx) {
+  if (!_lifecycle.acceptsNewWork()) return false;
   if (idx < 0 || idx >= MQTT_MAX_BROKERS) return false;
   BrokerClient &bc = _clients[idx];
   const MqttBrokerConfig &broker = _settings.broker(idx);
@@ -1321,6 +1513,7 @@ void MqttReporter::releasePublishEntry(PublishEntry &entry) {
 bool MqttReporter::enqueuePublish(
     int idx, const char *topic, const char *payload, size_t payload_len,
     uint8_t qos, bool retain, bool is_status) {
+  if (!_lifecycle.acceptsNewWork()) return false;
   if (idx < 0 || idx >= MQTT_MAX_BROKERS || topic == nullptr || payload == nullptr ||
       strlen(payload) != payload_len) {
     return false;
@@ -1475,6 +1668,7 @@ bool MqttReporter::anyBrokerConnected() const {
 }
 
 void MqttReporter::enqueueCallbackEvent(const CallbackEvent &event) {
+  if (!_callbacks_allowed.load(std::memory_order_acquire)) return;
   if (_callback_queue != nullptr && xQueueSend(_callback_queue, &event, 0) == pdTRUE) {
     if (event.type == CallbackEventType::WifiDisconnected ||
         event.type == CallbackEventType::WifiGotIp) {
@@ -2297,6 +2491,7 @@ bool MqttReporter::getConfigValue(const char *key, char *dest, size_t dest_size,
 }
 
 bool MqttReporter::setConfigValue(const char *key, const char *value) {
+  if (!_lifecycle.acceptsNewWork()) return false;
   int changed_broker_idx = -1;
   const bool restart_live_client =
       reporterConfigNeedsClientRestart(key, &changed_broker_idx);
@@ -2325,6 +2520,7 @@ bool MqttReporter::setConfigValue(const char *key, const char *value) {
 }
 
 bool MqttReporter::resetConfig() {
+  if (!_lifecycle.acceptsNewWork()) return false;
   _settings.resetToDefaults();
   _settings.clearWriteHold();
   if (!_settings.save()) {
@@ -2342,6 +2538,7 @@ bool MqttReporter::resetConfig() {
 }
 
 void MqttReporter::reconnect(int broker_idx) {
+  if (!_lifecycle.acceptsNewWork()) return;
   _identity_strings_dirty = true;
   ensureIdentityStrings();
   if (broker_idx >= 0 && broker_idx < MQTT_MAX_BROKERS) {

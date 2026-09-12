@@ -13,6 +13,13 @@
 #include <AsyncElegantOTA.h>
 
 #include <SPIFFS.h>
+#include <helpers/MQTTOTABarrier.h>
+
+#if defined(WITH_MQTT_REPORTER)
+extern "C" bool meshcore_mqtt_stop_for_ota();
+extern "C" bool meshcore_mqtt_can_flash_after_stop();
+extern "C" bool meshcore_mqtt_resume_after_ota_abort();
+#endif
 
 namespace {
 
@@ -36,6 +43,7 @@ wifi_mode_t ota_previous_wifi_mode = WIFI_OFF;
 bool ota_previous_inhibit_sleep = false;
 bool ota_active = false;
 char ota_password[OTA_SECRET_CHARS + 1];
+MQTTOTA::Barrier ota_barrier;
 
 void generateOTASecret(char destination[OTA_SECRET_CHARS + 1]) {
   static constexpr char HEX_DIGITS[] = "0123456789abcdef";
@@ -57,6 +65,22 @@ bool requireOTAAuthentication(AsyncWebServerRequest* request) {
   return false;
 }
 
+bool allowOTAFlashIO() {
+#if defined(WITH_MQTT_REPORTER)
+  return ota_barrier.allowFlashIO(meshcore_mqtt_can_flash_after_stop());
+#else
+  return ota_barrier.allowFlashIO(true);
+#endif
+}
+
+void resumeMQTTAfterOTAAbort() {
+#if defined(WITH_MQTT_REPORTER)
+  if (!meshcore_mqtt_resume_after_ota_abort()) {
+    MESH_DEBUG_PRINTLN("OTA: MQTT restart withheld; previous stop remains unproven");
+  }
+#endif
+}
+
 } // namespace
 
 bool ESP32Board::startOTAUpdate(const char* id, char reply[]) {
@@ -66,6 +90,25 @@ bool ESP32Board::startOTAUpdate(const char* id, char reply[]) {
   }
   if (ota_server != nullptr) {
     snprintf(reply, 160, "Error: reboot before starting OTA again");
+    return false;
+  }
+
+  ota_barrier.reset();
+  if (!ota_barrier.requestStop()) {
+    snprintf(reply, 160, "Error: OTA lifecycle barrier unavailable");
+    return false;
+  }
+
+  bool mqtt_stop_clean = true;
+#if defined(WITH_MQTT_REPORTER)
+  mqtt_stop_clean = meshcore_mqtt_stop_for_ota();
+#endif
+  ota_barrier.onStopComplete(mqtt_stop_clean);
+  if (!mqtt_stop_clean) {
+    ota_barrier.abort();
+    resumeMQTTAfterOTAAbort();
+    snprintf(reply, 160, "Error: MQTT stop unverified; OTA flash refused");
+    MESH_DEBUG_PRINTLN("startOTAUpdate: MQTT stop unverified; flash gate remains closed");
     return false;
   }
 
@@ -89,6 +132,8 @@ bool ESP32Board::startOTAUpdate(const char* id, char reply[]) {
     WiFi.setAutoReconnect(true);
 #endif
     inhibit_sleep = ota_previous_inhibit_sleep;
+    ota_barrier.abort();
+    resumeMQTTAfterOTAAbort();
     snprintf(reply, 160, "Error: could not start isolated OTA access point");
     return false;
   }
@@ -114,6 +159,7 @@ bool ESP32Board::startOTAUpdate(const char* id, char reply[]) {
   });
 
   AsyncElegantOTA.setID(id_buf);
+  AsyncElegantOTA.setFlashGate(allowOTAFlashIO);
   // ESP-IDF also verifies image signatures here when Secure Boot is provisioned.
   // OTA-enabled production devices should use Secure Boot for that extra boundary.
   AsyncElegantOTA.begin(ota_server, OTA_USERNAME, ota_password);
@@ -134,6 +180,10 @@ void ESP32Board::serviceOTAUpdate() {
     return;
   }
 
+  // Close the cross-task flash gate before touching either the updater or the
+  // server so an already-open upload cannot write another chunk during expiry.
+  ota_barrier.abort();
+  AsyncElegantOTA.abort();
   ota_server->end();
   WiFi.softAPdisconnect(true);
   WiFi.mode(ota_previous_wifi_mode);
@@ -143,6 +193,7 @@ void ESP32Board::serviceOTAUpdate() {
   inhibit_sleep = ota_previous_inhibit_sleep;
   ota_active = false;
   memset(ota_password, 0, sizeof(ota_password));
+  resumeMQTTAfterOTAAbort();
   MESH_DEBUG_PRINTLN("serviceOTAUpdate: OTA window expired");
 }
 

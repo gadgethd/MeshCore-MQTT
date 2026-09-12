@@ -27,11 +27,14 @@
 class AsyncElegantOtaClass{
 
     public:
-        void
-            setID(const char* id),
-            begin(AsyncWebServer *server, const char* username = "", const char* password = ""),
-            loop(),
-            restart();
+        using FlashGate = bool (*)();
+
+        void setID(const char* id);
+        void setFlashGate(FlashGate gate);
+        void begin(AsyncWebServer *server, const char* username = "", const char* password = "");
+        void abort();
+        void loop();
+        void restart();
 
     private:
         AsyncWebServer *_server;
@@ -42,6 +45,9 @@ class AsyncElegantOtaClass{
         String _username = "";
         String _password = "";
         bool _authRequired = false;
+        FlashGate _flashGate = nullptr;
+        bool _uploadInProgress = false;
+        bool _uploadSucceeded = false;
 
 };
 
