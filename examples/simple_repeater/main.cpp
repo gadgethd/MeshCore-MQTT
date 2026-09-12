@@ -2,6 +2,7 @@
 #include <Mesh.h>
 
 #include "MyMesh.h"
+#include <helpers/CLIInput.h>
 
 #ifdef DISPLAY_CLASS
   #include "UITask.h"
@@ -27,29 +28,11 @@ void halt() {
   while (1) ;
 }
 
-static char command[160];
+static char command_storage[160];
+static SerialInputBuffer command(command_storage, sizeof(command_storage));
 #ifdef ETHERNET_ENABLED
 static char ethernet_command[160];
 #endif
-
-static bool isSecretCommandInput(const char *line) {
-  if (line == nullptr) return false;
-  if (strncmp(line, "password ", 9) == 0 ||
-      strncmp(line, "guest.password ", 15) == 0 ||
-      strncmp(line, "set guest.password ", 19) == 0 ||
-      strncmp(line, "set bridge.secret ", 18) == 0) {
-    return true;
-  }
-  if (strncmp(line, "set mqtt.", 9) != 0) return false;
-
-  const char *key = line + 9;
-  const char *value = strchr(key, ' ');
-  if (value == nullptr) return false;
-  size_t key_len = (size_t)(value - key);
-  if (key_len == 9 && strncmp(key, "wifi.pass", key_len) == 0) return true;
-  if (key_len == 8 && strncmp(key, "password", key_len) == 0) return true;
-  return key_len >= 9 && strncmp(value - 9, ".password", 9) == 0;
-}
 
 // For power saving
 unsigned long POWERSAVING_FIRSTSLEEP_SECS = 120; // The first sleep (if enabled) from boot
@@ -134,7 +117,7 @@ void setup() {
   Serial.print("Repeater ID: ");
   mesh::Utils::printHex(Serial, the_mesh.self_id.pub_key, PUB_KEY_SIZE); Serial.println();
 
-  command[0] = 0;
+  command.reset();
 #ifdef ETHERNET_ENABLED
   ethernet_command[0] = 0;
 #endif
@@ -166,37 +149,32 @@ void setup() {
 
 void loop() {
   // Handle Serial CLI
-  int len = strlen(command);
-  while (Serial.available() && len < sizeof(command)-1) {
+  while (Serial.available() && !command.lineReady()) {
     char c = Serial.read();
-    if (c != '\n') {
-      command[len++] = c;
-      command[len] = 0;
-      if (!isSecretCommandInput(command)) Serial.print(c);
+    const SerialInputBuffer::AppendResult result = command.append(c);
+    if (result != SerialInputBuffer::AppendResult::Ignored &&
+        c != '\n' && !cli_input::isSecretCommandInput(command.data())) {
+      Serial.print(c);
     }
-    if (c == '\r') break;
-  }
-  if (len == sizeof(command)-1) {  // command buffer full
-    command[sizeof(command)-1] = '\r';
+    if (result == SerialInputBuffer::AppendResult::LineReady) break;
   }
 
-  if (len > 0 && command[len - 1] == '\r') {  // received complete line
+  if (command.lineReady()) {  // received complete line or truncated full line
     Serial.print('\n');
-    command[len - 1] = 0;  // replace newline with C string null terminator
     char reply[160];
     reply[0] = 0;
 #ifdef ETHERNET_ENABLED
-    if (!ethernet_handle_command(command, reply)) {
-      the_mesh.handleCommand(0, command, reply, sizeof(reply));
+    if (!ethernet_handle_command(command.data(), reply)) {
+      the_mesh.handleCommand(0, command.data(), reply, sizeof(reply));
     }
 #else
-    the_mesh.handleCommand(0, command, reply, sizeof(reply));  // NOTE: there is no sender_timestamp via serial!
+    the_mesh.handleCommand(0, command.data(), reply, sizeof(reply));  // NOTE: there is no sender_timestamp via serial!
 #endif
     if (reply[0]) {
       Serial.print("  -> "); Serial.println(reply);
     }
 
-    command[0] = 0;  // reset command buffer
+    command.finishLine();
   }
 
 #ifdef ETHERNET_ENABLED

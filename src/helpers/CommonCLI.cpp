@@ -1,5 +1,6 @@
 #include <Arduino.h>
 #include "CommonCLI.h"
+#include "CLIInput.h"
 #include "TxtDataHelpers.h"
 #include "AdvertDataHelpers.h"
 #include "TxtDataHelpers.h"
@@ -458,9 +459,14 @@ void CommonCLI::handleSetCmd(uint32_t sender_timestamp, char* command, char* rep
       sprintf(reply, "OK - %d.%d%%", a_int, a_frac);
     }
   } else if (memcmp(config, "af ", 3) == 0) {
-    _prefs->airtime_factor = atof(&config[3]);
-    savePrefs();
-    strcpy(reply, "OK");
+    float af;
+    if (!cli_input::parseAirtimeFactor(&config[3], af)) {
+      strcpy(reply, "ERROR: af must be 0-9");
+    } else {
+      _prefs->airtime_factor = af;
+      savePrefs();
+      strcpy(reply, "OK");
+    }
   } else if (memcmp(config, "int.thresh ", 11) == 0) {
     _prefs->interference_threshold = atoi(&config[11]);
     savePrefs();
