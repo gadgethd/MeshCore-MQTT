@@ -14,6 +14,7 @@
 #include "helpers/MQTTLifecycle.h"
 #include "helpers/MqttClockPolicy.h"
 #include "helpers/MqttPublishGuard.h"
+#include "helpers/MqttPayloadBuilders.h"
 #include "helpers/MqttReconnectPolicy.h"
 #include "helpers/MqttTlsCapPolicy.h"
 #include "helpers/MqttWirePreflight.h"
@@ -331,7 +332,6 @@ private:
   bool buildNeighborsPayload(uint32_t now_ms, size_t &payload_len) const;
   void maybePublishNeighbors(uint32_t now_ms);
 
-  void appendCpuIdleStats(mqtt_publish::CheckedBufferBuilder &builder) const;
   bool appendStatusStatsPayload(mqtt_publish::CheckedBufferBuilder &builder, int broker_idx) const;
   bool buildStatusPayload(int broker_idx, const char *status, size_t &payload_len) const;
   bool buildPacketPayload(
@@ -359,6 +359,13 @@ private:
   void maybePrintPeriodicStats();
 
   static esp_err_t mqttEventHandler(esp_mqtt_event_handle_t event);
+  static bool appendStatusStatsPayloadThunk(
+      mqtt_publish::CheckedBufferBuilder &builder,
+      int broker_idx,
+      const void *context);
+  static bool readNeighborRecord(const void *context,
+                                 size_t index,
+                                 mqtt_payload::NeighborRecord &record);
   static bool shouldIncludePath(const mesh::Packet *pkt);
   static std::atomic<MqttReporter *> s_instance;
 };
