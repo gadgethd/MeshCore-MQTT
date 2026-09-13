@@ -75,7 +75,15 @@ class MqttOtaSecurityTests(unittest.TestCase):
             section = environment_section(read(path), name)
             self.assertIn("-D WITH_MQTT_REPORTER=1", section)
             self.assertIn("-D DISABLE_WIFI_OTA=1", section)
-            self.assertIn("${esp32_ota.lib_deps}", section)
+            self.assertNotIn("${esp32_ota.lib_deps}", section)
+
+        ota_section = environment_section(
+            read("platformio.ini"), "Heltec_v3_repeater_mqtt_ota"
+        )
+        self.assertIn("extends = env:Heltec_v3_repeater_mqtt", ota_section)
+        self.assertIn("-D DISABLE_WIFI_OTA=1", ota_section)
+        self.assertIn("-D ENABLE_WIFI_OTA=1", ota_section)
+        self.assertIn("${esp32_ota.lib_deps}", ota_section)
 
     def test_operator_can_explicitly_enable_ota(self):
         overrides = read("arch/esp32/extra_scripts/mqtt_build_vars.py")

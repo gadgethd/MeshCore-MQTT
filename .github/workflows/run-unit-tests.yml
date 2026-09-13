@@ -19,8 +19,26 @@ jobs:
       - name: Setup Build Environment
         uses: ./.github/actions/setup-build-environment
 
+      - name: Install Python Test Dependencies
+        run: python3 -m pip install pytest
+
       - name: Run Unit Tests
         run: pio test -e native -e native_kiss_modem -vv
+
+      - name: Run Python Tests
+        run: python3 -m pytest tests/ -q
+
+      - name: Check Frozen MQTT Fixtures
+        run: |
+          python3 scripts/check-ukmesh-payload-fixtures.py \
+            --capture test/fixtures/ukmesh/capture.sample.jsonl \
+            --allow-missing-neighbors-fixture
+          if python3 scripts/check-ukmesh-payload-fixtures.py \
+            --capture /dev/null \
+            --allow-missing-neighbors-fixture; then
+            echo "expected empty capture to fail closed" >&2
+            exit 1
+          fi
 
       - name: Upload Test Results
         # Upload test results even if the test step failed.

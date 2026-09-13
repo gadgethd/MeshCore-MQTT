@@ -1,8 +1,9 @@
 # ukmesh payload fixtures (C6)
 
 Frozen samples of the wire payloads our firmware publishes to the ukmesh
-broker, captured from a live test-lane node (`hermes-test` / "MQTT test",
-Heltec V3, v1.17.0) on 2026-09-11. They lock the **payload contract**:
+broker, refreshed from a fresh read-only test-lane capture on 2026-09-13.
+The observed node is the Heltec V3 "MQTT test" node running v1.17.0. These
+samples lock the **payload contract**:
 topic families `{root}/{iata}/{public_key}/{status,packets,neighbors}` and the
 JSON structure of each family, so no refactor can silently change what ukmesh
 consumers receive.
@@ -13,8 +14,16 @@ consumers receive.
   **Sanitized:** `stats.wifi_ssid` is replaced with `REDACTED`; no other
   fields carry site-identifying data. Do not un-redact.
 - `packet-tx.sample.json` - one outbound packet record.
+- `capture.sample.jsonl` - the sanitized status/packet lines used by CI for
+  comparator acceptance.
 - `neighbors` fixture: to be added when a live sample is captured (the node
   publishes neighbours on its own schedule).
+
+The capture contained no neighbors payload, and the observed v1.17.0 image
+does not emit the newer clock/TLS/heap/queue-byte/outbox diagnostic fields
+implemented by the current builder. Those current fields are covered by the
+native production-builder tests; the live fixture will be refreshed again when
+the test-lane image publishes them. No synthetic live values are added here.
 
 ## Enforcement
 

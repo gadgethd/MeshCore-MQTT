@@ -3,6 +3,7 @@
 #if defined(ESP32) && defined(WITH_MQTT_REPORTER)
 
 #include "MyMesh.h"
+#include "helpers/MqttPayloadBuilders.h"
 
 #include <esp_crt_bundle.h>
 #include <esp_heap_caps.h>
@@ -2010,30 +2011,13 @@ uint32_t MqttReporter::heardNodesLast24Hours(uint32_t now_ms) const {
 }
 
 bool MqttReporter::buildNeighborsPayload(uint32_t now_ms, size_t &payload_len) const {
-  payload_len = 0;
-  mqtt_publish::CheckedBufferBuilder builder(
-      _build_buffer, mqtt_publish::kBuildBufferBytes);
-  builder.append("{\"nodes\":[");
-  bool first = true;
-  for (int i = 0; i < NEIGHBOR_CAPACITY; i++) {
-    const NeighborEntry &entry = _neighbors[i];
-    if (!entry.used) continue;
-    if (!first) builder.append(",");
-    first = false;
-    builder.append("{\"id\":\"");
-    builder.appendHex(entry.id, PUB_KEY_SIZE);
-    builder.append("\",\"rssi\":");
-    builder.appendSigned(entry.rssi);
-    builder.append(",\"snr\":");
-    builder.appendFloat1(entry.snr);
-    builder.append(",\"last_seen_s\":");
-    builder.appendUnsigned((uint32_t)(now_ms - entry.last_heard_ms) / 1000UL);
-    builder.append("}");
-  }
-  builder.append("]}");
-  if (!builder.ok() || builder.length() > mqtt_publish::kMaxPublishPayloadBytes) return false;
-  payload_len = builder.length();
-  return true;
+  mqtt_payload::NeighborsPayloadInput input = {};
+  input.now_ms = now_ms;
+  input.capacity = NEIGHBOR_CAPACITY;
+  input.reader = &MqttReporter::readNeighborRecord;
+  input.context = this;
+  return mqtt_payload::buildNeighborsPayload(
+      _build_buffer, mqtt_publish::kBuildBufferBytes, input, payload_len);
 }
 
 void MqttReporter::maybePublishNeighbors(uint32_t now_ms) {
@@ -2060,271 +2044,185 @@ void MqttReporter::maybePublishNeighbors(uint32_t now_ms) {
   }
 }
 
-void MqttReporter::appendCpuIdleStats(mqtt_publish::CheckedBufferBuilder &builder) const {
-  if (_idle_pct_core0 < 0.0f) {
-    builder.append(",\"idle_pct_core0\":null");
-  } else {
-    builder.append(",\"idle_pct_core0\":");
-    builder.appendFloat1(_idle_pct_core0);
-  }
-#if portNUM_PROCESSORS > 1
-  if (_idle_pct_core1 < 0.0f) {
-    builder.append(",\"idle_pct_core1\":null");
-  } else {
-    builder.append(",\"idle_pct_core1\":");
-    builder.appendFloat1(_idle_pct_core1);
-  }
-#else
-  builder.append(",\"idle_pct_core1\":0.0");
-#endif
+bool MqttReporter::readNeighborRecord(
+    const void *context, size_t index, mqtt_payload::NeighborRecord &record) {
+  if (context == nullptr || index >= NEIGHBOR_CAPACITY) return false;
+  const MqttReporter *self = static_cast<const MqttReporter *>(context);
+  const NeighborEntry &entry = self->_neighbors[index];
+  record.id = entry.id;
+  record.id_bytes = PUB_KEY_SIZE;
+  record.rssi = entry.rssi;
+  record.snr = entry.snr;
+  record.last_heard_ms = entry.last_heard_ms;
+  record.used = entry.used;
+  return true;
+}
+
+bool MqttReporter::appendStatusStatsPayloadThunk(
+    mqtt_publish::CheckedBufferBuilder &builder, int broker_idx,
+    const void *context) {
+  if (context == nullptr) return false;
+  const MqttReporter *self = static_cast<const MqttReporter *>(context);
+  return self->appendStatusStatsPayload(builder, broker_idx);
 }
 
 bool MqttReporter::appendStatusStatsPayload(
     mqtt_publish::CheckedBufferBuilder &builder, int broker_idx) const {
   const uint32_t now_ms = millis();
   const bool wifi_connected = isWiFiConnected();
-  const auto appendUnsignedField = [&builder](const char *key, uint64_t value) {
-    builder.append(key);
-    builder.appendUnsigned(value);
-  };
-  const auto appendSignedField = [&builder](const char *key, int64_t value) {
-    builder.append(key);
-    builder.appendSigned(value);
-  };
-
-  builder.append("{");
-  appendUnsignedField("\"uptime_ms\":", now_ms);
-  appendUnsignedField(",\"boot_count\":", _boot_count);
-  builder.append(",\"reset_reason\":\"");
-  builder.appendJsonEscaped(_reset_reason);
-  builder.append("\"");
-  builder.append(",\"ntp_synced\":");
-  builder.append(mqtt_clock::isNtpSource(_clock_source) ? "true" : "false");
-  builder.append(",\"clock_trusted\":");
-  builder.append(_time_synced ? "true" : "false");
-  builder.append(",\"ntp_sync_source\":\"");
-  builder.append(mqtt_clock::sourceName(_clock_source));
-  builder.append("\"");
-  builder.append(",\"ntp_sync_validated\":");
-  builder.append(mqtt_clock::isValidated(_clock_source) ? "true" : "false");
-  builder.append(",\"ntp_sync_fallback\":");
-  builder.append(mqtt_clock::isFallback(_clock_source) ? "true" : "false");
-  builder.append(",\"ntp_validation_mode\":\"");
-  builder.append(mqtt_clock::validationModeName(MQTT_NTP_VALIDATION_MODE));
-  builder.append("\"");
-  appendUnsignedField(",\"ntp_sync_age_ms\":",
-                      mqtt_clock::ageMs(_time_synced, (uint32_t)_ntp_synced_at_ms, now_ms));
-  appendUnsignedField(",\"ntp_attempt_generation\":", _ntp_attempt_generation);
-  appendUnsignedField(",\"ntp_last_attempt_age_ms\":",
-                      mqtt_clock::ageMs(_ntp_attempted, (uint32_t)_last_ntp_attempt, now_ms));
-  builder.append(",\"boot_epoch\":");
+  mqtt_payload::StatusStatsInput input = {};
+  input.uptime_ms = now_ms;
+  input.boot_count = _boot_count;
+  input.reset_reason = _reset_reason;
+  input.ntp_synced = mqtt_clock::isNtpSource(_clock_source);
+  input.clock_trusted = _time_synced;
+  input.ntp_sync_source = mqtt_clock::sourceName(_clock_source);
+  input.ntp_sync_validated = mqtt_clock::isValidated(_clock_source);
+  input.ntp_sync_fallback = mqtt_clock::isFallback(_clock_source);
+  input.ntp_validation_mode = mqtt_clock::validationModeName(MQTT_NTP_VALIDATION_MODE);
+  input.ntp_sync_age_ms =
+      mqtt_clock::ageMs(_time_synced, (uint32_t)_ntp_synced_at_ms, now_ms);
+  input.ntp_attempt_generation = _ntp_attempt_generation;
+  input.ntp_last_attempt_age_ms =
+      mqtt_clock::ageMs(_ntp_attempted, (uint32_t)_last_ntp_attempt, now_ms);
   time_t current_epoch = time(nullptr);
   uint32_t boot_epoch = 0;
   uint32_t uptime_secs = now_ms / 1000UL;
   if (_time_synced && current_epoch >= MQTT_VALID_EPOCH && current_epoch >= (time_t)uptime_secs) {
     boot_epoch = (uint32_t)(current_epoch - (time_t)uptime_secs);
   }
-  builder.appendUnsigned(boot_epoch);
-  appendUnsignedField(",\"max_loop_ms\":", _max_loop_ms);
-  appendUnsignedField(",\"max_loop_at_ms\":", _max_loop_at_ms);
-  appendUnsignedField(",\"loop_iterations\":", _loop_iterations);
-  appendUnsignedField(",\"wifi_reconnect_attempts\":", _wifi_reconnect_attempts);
-  appendUnsignedField(",\"rx_publish_calls\":", _rx_publish_calls);
-  appendUnsignedField(",\"tx_publish_calls\":", _tx_publish_calls);
-  appendUnsignedField(",\"tx_fail_publish_calls\":", _tx_fail_publish_calls);
-  appendUnsignedField(",\"publish_skipped_no_connection\":", _publish_skipped_no_connection);
-  appendUnsignedField(",\"build_failures\":", _build_failures);
-  appendUnsignedField(",\"serialize_preflight_drops\":", _serialize_preflight_drops);
-  appendUnsignedField(",\"forward_successes\":", _mesh->getForwardSuccessCount());
-  appendUnsignedField(",\"forward_successes_flood\":", _mesh->getForwardFloodSuccessCount());
-  appendUnsignedField(",\"forward_successes_direct\":", _mesh->getForwardDirectSuccessCount());
-  appendUnsignedField(",\"forward_failures\":", _mesh->getForwardFailureCount());
-  appendUnsignedField(",\"tx_queue_depth\":", _mesh->getTxQueueDepth());
-  appendUnsignedField(",\"tx_queue_depth_peak\":", _mesh->getTxQueuePeakDepth());
-  appendUnsignedField(",\"heap_free\":", ESP.getFreeHeap());
-  appendUnsignedField(",\"heap_min_free\":", ESP.getMinFreeHeap());
-  appendUnsignedField(",\"heap_min_seen_since_boot\":", _min_free_heap);
-  appendUnsignedField(",\"heap_internal_free\":",
-                      heap_caps_get_free_size(MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT));
-  appendUnsignedField(",\"heap_internal_largest_block\":",
-                      heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT));
-  appendUnsignedField(",\"heap_psram_free\":",
-                      _psram_available ? heap_caps_get_free_size(MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT) : 0);
-  appendUnsignedField(",\"heap_psram_largest_block\":",
-                      _psram_available ? heap_caps_get_largest_free_block(MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT) : 0);
-  builder.append(",\"wifi_connected\":");
-  builder.append(wifi_connected ? "true" : "false");
-  appendUnsignedField(",\"wifi_uptime_ms\":",
-                      _wifi_connected_since_ms != 0 ? now_ms - _wifi_connected_since_ms : 0);
-  builder.append(",\"wifi_rssi\":");
-  if (wifi_connected) {
-    builder.appendSigned(WiFi.RSSI());
-  } else {
-    builder.append("null");
-  }
+  input.boot_epoch = boot_epoch;
+  input.max_loop_ms = _max_loop_ms;
+  input.max_loop_at_ms = _max_loop_at_ms;
+  input.loop_iterations = _loop_iterations;
+  input.wifi_reconnect_attempts = _wifi_reconnect_attempts;
+  input.rx_publish_calls = _rx_publish_calls;
+  input.tx_publish_calls = _tx_publish_calls;
+  input.tx_fail_publish_calls = _tx_fail_publish_calls;
+  input.publish_skipped_no_connection = _publish_skipped_no_connection;
+  input.build_failures = _build_failures;
+  input.serialize_preflight_drops = _serialize_preflight_drops;
+  input.forward_successes = _mesh->getForwardSuccessCount();
+  input.forward_successes_flood = _mesh->getForwardFloodSuccessCount();
+  input.forward_successes_direct = _mesh->getForwardDirectSuccessCount();
+  input.forward_failures = _mesh->getForwardFailureCount();
+  input.tx_queue_depth = _mesh->getTxQueueDepth();
+  input.tx_queue_depth_peak = _mesh->getTxQueuePeakDepth();
+  input.heap_free = ESP.getFreeHeap();
+  input.heap_min_free = ESP.getMinFreeHeap();
+  input.heap_min_seen_since_boot = _min_free_heap;
+  input.heap_internal_free =
+      heap_caps_get_free_size(MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT);
+  input.heap_internal_largest_block =
+      heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT);
+  input.heap_psram_free = _psram_available
+                              ? heap_caps_get_free_size(MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT)
+                              : 0;
+  input.heap_psram_largest_block =
+      _psram_available
+          ? heap_caps_get_largest_free_block(MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT)
+          : 0;
+  input.wifi_connected = wifi_connected;
+  input.wifi_uptime_ms =
+      _wifi_connected_since_ms != 0 ? now_ms - _wifi_connected_since_ms : 0;
+  input.wifi_rssi = wifi_connected ? WiFi.RSSI() : 0;
   String wifi_ssid = WiFi.SSID();
-  if (wifi_connected && wifi_ssid.length() == 0) return false;
-  builder.append(",\"wifi_ssid\":\"");
-  builder.appendJsonEscaped(wifi_ssid.c_str());
-  builder.append("\"");
-  appendUnsignedField(",\"nodes_heard_24h\":", heardNodesLast24Hours(now_ms));
-  appendSignedField(",\"last_rx_rssi\":", _last_rx_rssi);
-  builder.append(",\"last_rx_snr\":");
-  builder.appendFloat1(_last_rx_snr);
-  appendSignedField(",\"tx_power_dbm\":", _mesh->getTxPowerDbm());
-  appendSignedField(",\"last_tx_fail_reason\":", _last_tx_fail_reason);
-  appendUnsignedField(",\"config_version\":", MqttSettingsStore::configVersion());
+  input.wifi_ssid = wifi_ssid.c_str();
+  input.nodes_heard_24h = heardNodesLast24Hours(now_ms);
+  input.last_rx_rssi = _last_rx_rssi;
+  input.last_rx_snr = _last_rx_snr;
+  input.tx_power_dbm = _mesh->getTxPowerDbm();
+  input.last_tx_fail_reason = _last_tx_fail_reason;
+  input.config_version = MqttSettingsStore::configVersion();
   char config_crc[12];
   snprintf(config_crc, sizeof(config_crc), "0x%08lX", (unsigned long)_config_crc32);
-  builder.append(",\"config_crc32\":\"");
-  builder.append(config_crc);
-  builder.append("\"");
-  builder.append(",\"fs_free_bytes\":");
+  input.config_crc32 = config_crc;
   const size_t fs_total_bytes = SPIFFS.totalBytes();
   const size_t fs_used_bytes = SPIFFS.usedBytes();
-  builder.appendUnsigned(fs_total_bytes >= fs_used_bytes ? fs_total_bytes - fs_used_bytes : 0);
-  appendUnsignedField(",\"fs_total_bytes\":", fs_total_bytes);
+  input.fs_free_bytes = fs_total_bytes >= fs_used_bytes ? fs_total_bytes - fs_used_bytes : 0;
+  input.fs_total_bytes = fs_total_bytes;
   nvs_stats_t nvs_stats = {};
-  if (nvs_get_stats(nullptr, &nvs_stats) == ESP_OK) {
-    appendUnsignedField(",\"nvs_free_entries\":", nvs_stats.free_entries);
-  } else {
-    builder.append(",\"nvs_free_entries\":null");
-  }
-  builder.append(",\"power_source\":\"");
-  builder.append(board.isExternalPowered() ? "usb" : "battery");
-  builder.append("\"");
-  builder.append(",\"solar_mv\":null");
+  input.nvs_free_entries_valid = nvs_get_stats(nullptr, &nvs_stats) == ESP_OK;
+  if (input.nvs_free_entries_valid) input.nvs_free_entries = nvs_stats.free_entries;
+  input.power_source = board.isExternalPowered() ? "usb" : "battery";
   float board_temp_c = readBoardTemperatureC();
-  if (isfinite(board_temp_c)) {
-    builder.append(",\"board_temp_c\":");
-    builder.appendFloat1(board_temp_c);
-  } else {
-    builder.append(",\"board_temp_c\":null");
-  }
+  input.board_temp_valid = isfinite(board_temp_c);
+  input.board_temp_c = board_temp_c;
   String channel_id = channelKeyId();
-  if (channel_id.length() >= 8) {
-    char short_channel_id[9];
-    memcpy(short_channel_id, channel_id.c_str(), 8);
-    short_channel_id[8] = '\0';
-    builder.append(",\"channel_id\":\"");
-    builder.appendJsonEscaped(short_channel_id);
-    builder.append("\"");
-  } else {
-    builder.append(",\"channel_id\":null");
-  }
-  builder.append(",\"git_commit\":\"");
-  builder.appendJsonEscaped(MESHCORE_GIT_COMMIT);
-  builder.append("\"");
-  appendCpuIdleStats(builder);
-
-  // Keep battery and airtime/utilization values sourced from the same core
-  // stats path used by the CLI, rather than duplicating board/radio reads here.
+  input.channel_id = channel_id.c_str();
+  input.git_commit = MESHCORE_GIT_COMMIT;
+  input.idle_pct_core0 = _idle_pct_core0;
+#if portNUM_PROCESSORS > 1
+  input.idle_pct_core1_available = true;
+#endif
+  input.idle_pct_core1 = _idle_pct_core1;
   String mesh_stats = _mesh->buildMqttStatusStatsJson();
-  static const char *const required_mesh_fields[] = {
-      "\"battery_mv\":", "\"uptime_secs\":", "\"tx_air_secs\":",
-      "\"rx_air_secs\":", "\"channel_utilization\":", "\"air_util_tx\":",
-      "\"air_util_rx\":"};
-  if (mesh_stats.length() < 2 || mesh_stats[0] != '{' ||
-      mesh_stats[mesh_stats.length() - 1] != '}') return false;
-  for (const char *required : required_mesh_fields) {
-    if (mesh_stats.indexOf(required) < 0) return false;
-  }
-  if (mesh_stats.length() > 2) {
-    builder.append(",");
-    builder.append(mesh_stats.c_str() + 1, mesh_stats.length() - 2);
-  }
+  input.mesh_stats = mesh_stats.c_str();
+  input.mesh_stats_len = mesh_stats.length();
 
+  String broker_uri;
   if (broker_idx >= 0 && broker_idx < MQTT_MAX_BROKERS) {
     const BrokerClient &bc = _clients[broker_idx];
     const MqttBrokerConfig &broker = _settings.broker(broker_idx);
-    builder.append(",\"mqtt\":{");
-    appendUnsignedField("\"broker_index\":", broker_idx + 1);
-    appendUnsignedField(",\"connect_attempts\":", bc.connect_attempts);
-    appendUnsignedField(",\"connect_start_failures\":", bc.connect_start_failures);
-    appendUnsignedField(",\"connect_events\":", bc.connect_events);
-    appendUnsignedField(",\"disconnect_events\":", bc.disconnect_events);
-    appendUnsignedField(",\"error_events\":", bc.error_events);
-    appendUnsignedField(",\"reconnect_rung\":", bc.recon.rung);
-    builder.append(",\"reconnect_breaker\":");
-    builder.append(bc.recon.breaker ? "true" : "false");
-    appendUnsignedField(",\"reconnect_next_in_ms\":",
-                        mqtt_reconnect::nextWaitMs(bc.recon, now_ms));
-    appendSignedField(",\"last_error_type\":", bc.last_error_type);
-    appendSignedField(",\"last_error_code\":", bc.last_error_code);
-    appendSignedField(",\"last_tls_err\":", bc.last_tls_last_error);
-    appendSignedField(",\"last_tls_stack_err\":", bc.last_tls_stack_error);
-    appendSignedField(",\"last_tls_cert_verify_flags\":", bc.last_tls_cert_verify_flags);
-    appendSignedField(",\"last_sock_errno\":", bc.last_transport_sock_errno);
-    appendSignedField(",\"last_connect_return_code\":", bc.last_connect_return_code);
-    appendUnsignedField(",\"last_error_at_ms\":", bc.last_error_at_ms);
-    appendUnsignedField(",\"last_error_age_ms\":",
-                        mqtt_clock::ageMs(bc.last_error_at_ms != 0, bc.last_error_at_ms, now_ms));
-    builder.append(",\"heap_inactive\":");
-    builder.append(bc.heap_inactive ? "true" : "false");
-    builder.append(",\"effective_transport\":\"");
-    builder.append(mqtt_tls_cap::transportName(bc.effective_transport));
-    builder.append("\"");
-    appendUnsignedField(",\"tls_live\":", liveTlsCount());
-    appendUnsignedField(",\"tls_cap\":", tlsCap());
-    String broker_uri = sanitizeBrokerUri(broker.uri);
-    if (broker.uri[0] != '\0' && broker_uri.length() == 0) return false;
-    builder.append(",\"broker_uri\":\"");
-    builder.appendJsonEscaped(broker_uri.c_str());
-    builder.append("\",\"broker_username\":\"");
-    builder.appendJsonEscaped(broker.username);
-    builder.append("\"");
-    appendUnsignedField(",\"reconnect_attempts_1h\":", reconnectAttemptsLastHour(bc, now_ms));
-    appendUnsignedField(",\"status_publishes\":", bc.status_publish_count);
-    appendUnsignedField(",\"packet_publishes\":", bc.packet_publish_count);
-    appendUnsignedField(",\"session_status_publishes\":", bc.session_status_publish_count);
-    appendUnsignedField(",\"session_packet_publishes\":", bc.session_packet_publish_count);
-    appendUnsignedField(",\"publish_failures\":", bc.publish_failures);
-    appendUnsignedField(",\"publish_queue_depth\":", bc.queue_count);
-    appendUnsignedField(",\"publish_queue_cap\":", MQTT_PUBLISH_QUEUE_SIZE);
-    appendUnsignedField(",\"publish_queue_drops\":", bc.queue_drops);
-    appendUnsignedField(",\"publish_queue_byte_drops\":", bc.queue_byte_drops);
-    appendUnsignedField(",\"publish_queue_bytes\":", bc.queue_bytes);
-    appendUnsignedField(",\"publish_queue_byte_cap\":", publishQueueBrokerByteCap());
-    appendUnsignedField(",\"publish_queue_total_bytes\":", _publish_queue_bytes_total);
-    appendUnsignedField(",\"publish_queue_total_byte_cap\":", publishQueueTotalByteCap());
-    appendSignedField(",\"publish_outbox_size\":",
-                      bc.client != nullptr ? esp_mqtt_client_get_outbox_size(bc.client) : -1);
-    appendUnsignedField(",\"publish_outbox_cap\":", MQTT_OUTBOX_HIGH_WATER);
-    appendUnsignedField(",\"publish_outbox_drops\":", bc.outbox_drops);
-    builder.append(",\"connected\":");
-    builder.append(bc.connected ? "true" : "false");
-    appendUnsignedField(",\"uptime_ms\":",
-                        bc.connected_since_ms != 0 ? now_ms - bc.connected_since_ms : 0);
-    appendUnsignedField(",\"neighbor_interval_s\":", broker.neighbor_interval_secs);
-    appendUnsignedField(",\"last_offline_epoch\":", bc.last_offline_epoch);
-    builder.append("}");
+    mqtt_payload::StatusMqttInput &mqtt = input.mqtt;
+    mqtt.present = true;
+    mqtt.broker_index = broker_idx + 1;
+    mqtt.connect_attempts = bc.connect_attempts;
+    mqtt.connect_start_failures = bc.connect_start_failures;
+    mqtt.connect_events = bc.connect_events;
+    mqtt.disconnect_events = bc.disconnect_events;
+    mqtt.error_events = bc.error_events;
+    mqtt.reconnect_rung = bc.recon.rung;
+    mqtt.reconnect_breaker = bc.recon.breaker;
+    mqtt.reconnect_next_in_ms = mqtt_reconnect::nextWaitMs(bc.recon, now_ms);
+    mqtt.last_error_type = bc.last_error_type;
+    mqtt.last_error_code = bc.last_error_code;
+    mqtt.last_tls_err = bc.last_tls_last_error;
+    mqtt.last_tls_stack_err = bc.last_tls_stack_error;
+    mqtt.last_tls_cert_verify_flags = bc.last_tls_cert_verify_flags;
+    mqtt.last_sock_errno = bc.last_transport_sock_errno;
+    mqtt.last_connect_return_code = bc.last_connect_return_code;
+    mqtt.last_error_at_ms = bc.last_error_at_ms;
+    mqtt.last_error_age_ms =
+        mqtt_clock::ageMs(bc.last_error_at_ms != 0, bc.last_error_at_ms, now_ms);
+    mqtt.heap_inactive = bc.heap_inactive;
+    mqtt.effective_transport = mqtt_tls_cap::transportName(bc.effective_transport);
+    mqtt.tls_live = liveTlsCount();
+    mqtt.tls_cap = tlsCap();
+    broker_uri = sanitizeBrokerUri(broker.uri);
+    mqtt.broker_uri = broker_uri.c_str();
+    mqtt.broker_uri_valid = !(broker.uri[0] != '\0' && broker_uri.length() == 0);
+    mqtt.broker_username = broker.username;
+    mqtt.reconnect_attempts_1h = reconnectAttemptsLastHour(bc, now_ms);
+    mqtt.status_publishes = bc.status_publish_count;
+    mqtt.packet_publishes = bc.packet_publish_count;
+    mqtt.session_status_publishes = bc.session_status_publish_count;
+    mqtt.session_packet_publishes = bc.session_packet_publish_count;
+    mqtt.publish_failures = bc.publish_failures;
+    mqtt.publish_queue_depth = bc.queue_count;
+    mqtt.publish_queue_cap = MQTT_PUBLISH_QUEUE_SIZE;
+    mqtt.publish_queue_drops = bc.queue_drops;
+    mqtt.publish_queue_byte_drops = bc.queue_byte_drops;
+    mqtt.publish_queue_bytes = bc.queue_bytes;
+    mqtt.publish_queue_byte_cap = publishQueueBrokerByteCap();
+    mqtt.publish_queue_total_bytes = _publish_queue_bytes_total;
+    mqtt.publish_queue_total_byte_cap = publishQueueTotalByteCap();
+    mqtt.publish_outbox_size =
+        bc.client != nullptr ? esp_mqtt_client_get_outbox_size(bc.client) : -1;
+    mqtt.publish_outbox_cap = MQTT_OUTBOX_HIGH_WATER;
+    mqtt.publish_outbox_drops = bc.outbox_drops;
+    mqtt.connected = bc.connected;
+    mqtt.uptime_ms = bc.connected_since_ms != 0 ? now_ms - bc.connected_since_ms : 0;
+    mqtt.neighbor_interval_s = broker.neighbor_interval_secs;
+    mqtt.last_offline_epoch = bc.last_offline_epoch;
   }
-
-  builder.append("}");
-  return builder.ok();
+  return mqtt_payload::appendStatusStatsPayload(builder, input);
 }
 
 bool MqttReporter::buildStatusPayload(
     int broker_idx, const char *status, size_t &payload_len) const {
   payload_len = 0;
   const MqttSharedConfig &shared = _settings.shared();
-  mqtt_publish::CheckedBufferBuilder builder(
-      _build_buffer, mqtt_publish::kMaxLwtPayloadBytes + 1);
-  builder.append("{");
-  if (status != nullptr && status[0] != '\0') {
-    builder.append("\"status\":\"");
-    builder.appendJsonEscaped(status);
-    builder.append("\",");
-  }
-  builder.append("\"origin\":\"");
-  builder.appendJsonEscaped(_mesh->getNodeName());
-  builder.append("\",\"origin_id\":\"");
-  builder.append(_origin_id);
-  builder.append("\",\"model\":\"");
-  builder.appendJsonEscaped(shared.model);
-  builder.append("\",\"firmware_version\":\"");
-  builder.appendJsonEscaped(FIRMWARE_VERSION);
-  builder.append("\",\"radio\":\"");
   char radio_buf[64];
   const NodePrefs *prefs = _mesh->getNodePrefs();
   const float freq = prefs ? prefs->freq : LORA_FREQ;
@@ -2334,30 +2232,31 @@ bool MqttReporter::buildStatusPayload(
   int radio_len = snprintf(radio_buf, sizeof(radio_buf), "SX1262 %.3f/%.0f/%d/%d",
                            (double)freq, (double)bw, sf, cr);
   if (radio_len <= 0 || (size_t)radio_len >= sizeof(radio_buf)) return false;
-  builder.appendJsonEscaped(radio_buf);
-  builder.append("\",\"client_version\":\"");
-  builder.appendJsonEscaped(shared.client_version);
-  builder.append("\"");
+
+  mqtt_payload::StatusPayloadInput input = {};
+  input.status = status;
+  input.origin = _mesh->getNodeName();
+  input.origin_id = _origin_id;
+  input.model = shared.model;
+  input.firmware_version = FIRMWARE_VERSION;
+  input.radio = radio_buf;
+  input.client_version = shared.client_version;
+  input.time_synced = _time_synced;
+  input.broker_idx = broker_idx;
+  input.stats_appender = &MqttReporter::appendStatusStatsPayloadThunk;
+  input.stats_context = this;
+  char timestamp[40];
   if (_time_synced) {
     DateTime dt(_clock->getCurrentTime());
-    char timestamp[40];
     int timestamp_len = snprintf(timestamp, sizeof(timestamp),
                                  "%04d-%02d-%02dT%02d:%02d:%02dZ",
                                  dt.year(), dt.month(), dt.day(),
                                  dt.hour(), dt.minute(), dt.second());
     if (timestamp_len <= 0 || (size_t)timestamp_len >= sizeof(timestamp)) return false;
-    builder.append(",\"timestamp\":\"");
-    builder.append(timestamp);
-    builder.append("\"");
-  } else {
-    builder.append(",\"timestamp\":null");
+    input.timestamp = timestamp;
   }
-  builder.append(",\"stats\":");
-  if (!appendStatusStatsPayload(builder, broker_idx)) return false;
-  builder.append("}");
-  if (!builder.ok() || builder.length() > mqtt_publish::kMaxLwtPayloadBytes) return false;
-  payload_len = builder.length();
-  return true;
+  return mqtt_payload::buildStatusPayload(
+      _build_buffer, mqtt_publish::kMaxLwtPayloadBytes + 1, input, payload_len);
 }
 
 bool MqttReporter::buildPacketPayload(
@@ -2381,89 +2280,61 @@ bool MqttReporter::buildPacketPayload(
 
   uint8_t packet_hash[MAX_HASH_SIZE];
   pkt->calculatePacketHash(packet_hash);
-  mqtt_publish::CheckedBufferBuilder builder(
-      _build_buffer, mqtt_publish::kBuildBufferBytes);
-  builder.append("{\"origin\":\"");
-  builder.appendJsonEscaped(_mesh->getNodeName());
-  builder.append("\",\"origin_id\":\"");
-  builder.append(_origin_id);
-  builder.append("\"");
+
+  mqtt_payload::PacketPayloadInput input = {};
+  input.direction = direction;
+  input.origin = _mesh->getNodeName();
+  input.origin_id = _origin_id;
+  input.time_synced = _time_synced;
+  input.len = len;
+  input.packet_type = pkt->getPayloadType();
+  input.route_direct = pkt->isRouteDirect();
+  input.packet_payload_len = pkt->payload_len;
+  input.raw = raw;
+  input.raw_len = raw_len;
+  input.include_radio_metrics = include_radio_metrics;
+  input.snr = (int)snr;
+  input.rssi = rssi;
+  input.score = (int)(score * 1000.0f);
+  input.duration_ms = duration_ms;
+  input.hash = packet_hash;
+  input.hash_len = MAX_HASH_SIZE;
+  input.include_path = input.route_direct && shouldIncludePath(pkt);
+  input.max_packet_payload = MAX_PACKET_PAYLOAD;
+  input.encoded_path_len = pkt->path_len;
+  input.has_transport_codes = pkt->hasTransportCodes();
+  input.max_path_bytes = MAX_PATH_SIZE;
+  input.max_raw_bytes = MAX_TRANS_UNIT;
+
   DateTime dt(_clock->getCurrentTime());
+  char timestamp[40];
+  char time_field[16];
+  char date_field[16];
   if (_time_synced) {
-    char timestamp[40];
     int timestamp_len = snprintf(timestamp, sizeof(timestamp),
                                  "%04d-%02d-%02dT%02d:%02d:%02dZ",
                                  dt.year(), dt.month(), dt.day(),
                                  dt.hour(), dt.minute(), dt.second());
     if (timestamp_len <= 0 || (size_t)timestamp_len >= sizeof(timestamp)) return false;
-    builder.append(",\"timestamp\":\"");
-    builder.append(timestamp);
-    builder.append("\"");
-  } else {
-    builder.append(",\"timestamp\":null");
-  }
-  builder.append(",\"type\":\"PACKET\",\"direction\":\"");
-  builder.appendJsonEscaped(direction);
-  builder.append("\"");
-  if (_time_synced) {
-    char time_field[16];
-    char date_field[16];
     int time_len = snprintf(time_field, sizeof(time_field), "%02d:%02d:%02d",
                             dt.hour(), dt.minute(), dt.second());
     int date_len = snprintf(date_field, sizeof(date_field), "%d/%d/%d",
                             dt.day(), dt.month(), dt.year());
     if (time_len <= 0 || (size_t)time_len >= sizeof(time_field) ||
         date_len <= 0 || (size_t)date_len >= sizeof(date_field)) return false;
-    builder.append(",\"time\":\"");
-    builder.append(time_field);
-    builder.append("\",\"date\":\"");
-    builder.append(date_field);
-    builder.append("\"");
-  } else {
-    builder.append(",\"time\":null,\"date\":null");
+    input.timestamp = timestamp;
+    input.time = time_field;
+    input.date = date_field;
   }
-  builder.append(",\"len\":\"");
-  builder.appendSigned(len);
-  builder.append("\",\"packet_type\":\"");
-  builder.appendUnsigned(pkt->getPayloadType());
-  builder.append("\",\"route\":\"");
-  builder.append(pkt->isRouteDirect() ? "D" : "F");
-  builder.append("\",\"payload_len\":\"");
-  builder.appendUnsigned(pkt->payload_len);
-  builder.append("\",\"raw\":\"");
-  builder.appendHex(raw, raw_len);
-  builder.append("\"");
-
-  if (include_radio_metrics) {
-    builder.append(",\"SNR\":\"");
-    builder.appendSigned((int)snr);
-    builder.append("\",\"RSSI\":\"");
-    builder.appendSigned(rssi);
-    builder.append("\",\"score\":\"");
-    builder.appendSigned((int)(score * 1000.0f));
-    builder.append("\",\"duration\":\"");
-    builder.appendUnsigned(duration_ms);
-    builder.append("\"");
-  }
-
-  builder.append(",\"hash\":\"");
-  builder.appendHex(packet_hash, MAX_HASH_SIZE);
-  builder.append("\"");
-
-  if (pkt->isRouteDirect() && shouldIncludePath(pkt)) {
-    char path_buf[16];
+  char path_buf[16];
+  if (input.include_path) {
     int path_len = snprintf(path_buf, sizeof(path_buf), "%02X -> %02X",
                             (uint32_t)pkt->payload[1], (uint32_t)pkt->payload[0]);
     if (path_len <= 0 || (size_t)path_len >= sizeof(path_buf)) return false;
-    builder.append(",\"path\":\"");
-    builder.append(path_buf);
-    builder.append("\"");
+    input.path = path_buf;
   }
-
-  builder.append("}");
-  if (!builder.ok() || builder.length() > mqtt_publish::kMaxPublishPayloadBytes) return false;
-  payload_len = builder.length();
-  return true;
+  return mqtt_payload::buildPacketPayload(
+      _build_buffer, mqtt_publish::kBuildBufferBytes, input, payload_len);
 }
 
 const char *MqttReporter::getWiFiSsid() const {

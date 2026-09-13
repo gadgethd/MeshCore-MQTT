@@ -257,8 +257,8 @@ TEST(UkmeshPayloadFixtures, PacketContract) {
   EXPECT_TRUE(isHex(stringValue(j, "origin_id"), 64));
   EXPECT_TRUE(isHex(stringValue(j, "hash"), 16));
   // Numbers in this payload family are string-encoded on the wire.
-  EXPECT_EQ(stringValue(j, "len"), "36");
-  EXPECT_EQ(stringValue(j, "payload_len"), "20");
+  EXPECT_EQ(stringValue(j, "len"), "61");
+  EXPECT_EQ(stringValue(j, "payload_len"), "35");
   const std::string raw = stringValue(j, "raw");
   EXPECT_FALSE(raw.empty());
   for (char c : raw) {
