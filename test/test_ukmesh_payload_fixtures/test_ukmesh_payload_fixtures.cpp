@@ -118,7 +118,14 @@ const char *kStatusStatsKeys[] = {
     "boot_count",
     "reset_reason",
     "ntp_synced",
+    "clock_trusted",
+    "ntp_sync_source",
+    "ntp_sync_validated",
+    "ntp_sync_fallback",
+    "ntp_validation_mode",
     "ntp_sync_age_ms",
+    "ntp_attempt_generation",
+    "ntp_last_attempt_age_ms",
     "boot_epoch",
     "max_loop_ms",
     "max_loop_at_ms",
@@ -128,6 +135,8 @@ const char *kStatusStatsKeys[] = {
     "tx_publish_calls",
     "tx_fail_publish_calls",
     "publish_skipped_no_connection",
+    "build_failures",
+    "serialize_preflight_drops",
     "forward_successes",
     "forward_successes_flood",
     "forward_successes_direct",
@@ -137,6 +146,10 @@ const char *kStatusStatsKeys[] = {
     "heap_free",
     "heap_min_free",
     "heap_min_seen_since_boot",
+    "heap_internal_free",
+    "heap_internal_largest_block",
+    "heap_psram_free",
+    "heap_psram_largest_block",
     "wifi_connected",
     "wifi_uptime_ms",
     "wifi_rssi",
@@ -180,7 +193,17 @@ const char *kStatusMqttKeys[] = {
     "reconnect_next_in_ms",
     "last_error_type",
     "last_error_code",
+    "last_tls_err",
+    "last_tls_stack_err",
+    "last_tls_cert_verify_flags",
+    "last_sock_errno",
+    "last_connect_return_code",
+    "last_error_at_ms",
+    "last_error_age_ms",
     "heap_inactive",
+    "effective_transport",
+    "tls_live",
+    "tls_cap",
     "broker_uri",
     "broker_username",
     "reconnect_attempts_1h",
@@ -190,7 +213,15 @@ const char *kStatusMqttKeys[] = {
     "session_packet_publishes",
     "publish_failures",
     "publish_queue_depth",
+    "publish_queue_cap",
     "publish_queue_drops",
+    "publish_queue_byte_drops",
+    "publish_queue_bytes",
+    "publish_queue_byte_cap",
+    "publish_queue_total_bytes",
+    "publish_queue_total_byte_cap",
+    "publish_outbox_size",
+    "publish_outbox_cap",
     "publish_outbox_drops",
     "connected",
     "uptime_ms",
@@ -198,7 +229,7 @@ const char *kStatusMqttKeys[] = {
     "last_offline_epoch",
 };
 
-const char *kPacketKeys[] = {
+const char *kPacketBaseKeys[] = {
     "origin",
     "origin_id",
     "timestamp",
@@ -212,6 +243,13 @@ const char *kPacketKeys[] = {
     "payload_len",
     "raw",
     "hash",
+};
+
+const char *kPacketRxKeys[] = {
+    "SNR",
+    "RSSI",
+    "score",
+    "duration",
 };
 
 TEST(UkmeshPayloadFixtures, StatusTopLevelContract) {
@@ -244,21 +282,47 @@ TEST(UkmeshPayloadFixtures, StatusStatsContract) {
   EXPECT_EQ(valueKind(j, "heap_free"), 'd');
 }
 
-TEST(UkmeshPayloadFixtures, PacketContract) {
+TEST(UkmeshPayloadFixtures, PacketTxContract) {
   const std::string j = fixtureText("packet-tx.sample.json");
   ASSERT_FALSE(j.empty());
   expectBalanced(j);
-  for (const char *k : kPacketKeys) {
+  for (const char *k : kPacketBaseKeys) {
     EXPECT_TRUE(containsKey(j, k)) << "missing packet key: " << k;
   }
+  for (const char *k : kPacketRxKeys) {
+    EXPECT_FALSE(containsKey(j, k)) << "rx-only key present in tx packet: " << k;
+  }
   EXPECT_EQ(stringValue(j, "type"), "PACKET");
-  const std::string dir = stringValue(j, "direction");
-  EXPECT_TRUE(dir == "tx" || dir == "rx") << dir;
+  EXPECT_EQ(stringValue(j, "direction"), "tx");
   EXPECT_TRUE(isHex(stringValue(j, "origin_id"), 64));
   EXPECT_TRUE(isHex(stringValue(j, "hash"), 16));
   // Numbers in this payload family are string-encoded on the wire.
-  EXPECT_EQ(stringValue(j, "len"), "61");
-  EXPECT_EQ(stringValue(j, "payload_len"), "35");
+  EXPECT_EQ(stringValue(j, "len"), "39");
+  EXPECT_EQ(stringValue(j, "payload_len"), "20");
+  const std::string raw = stringValue(j, "raw");
+  EXPECT_FALSE(raw.empty());
+  for (char c : raw) {
+    EXPECT_TRUE(std::isxdigit(static_cast<unsigned char>(c)));
+  }
+}
+
+TEST(UkmeshPayloadFixtures, PacketRxContract) {
+  const std::string j = fixtureText("packet-rx.sample.json");
+  ASSERT_FALSE(j.empty());
+  expectBalanced(j);
+  for (const char *k : kPacketBaseKeys) {
+    EXPECT_TRUE(containsKey(j, k)) << "missing packet key: " << k;
+  }
+  for (const char *k : kPacketRxKeys) {
+    EXPECT_TRUE(containsKey(j, k)) << "missing rx-only packet key: " << k;
+    EXPECT_EQ(valueKind(j, k), 's') << "rx-only packet key is not string-encoded: " << k;
+  }
+  EXPECT_EQ(stringValue(j, "type"), "PACKET");
+  EXPECT_EQ(stringValue(j, "direction"), "rx");
+  EXPECT_TRUE(isHex(stringValue(j, "origin_id"), 64));
+  EXPECT_TRUE(isHex(stringValue(j, "hash"), 16));
+  EXPECT_EQ(stringValue(j, "len"), "38");
+  EXPECT_EQ(stringValue(j, "payload_len"), "20");
   const std::string raw = stringValue(j, "raw");
   EXPECT_FALSE(raw.empty());
   for (char c : raw) {

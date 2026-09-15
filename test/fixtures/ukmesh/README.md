@@ -1,8 +1,8 @@
 # ukmesh payload fixtures (C6)
 
 Frozen samples of the wire payloads our firmware publishes to the ukmesh
-broker, refreshed from a fresh read-only test-lane capture on 2026-09-13.
-The observed node is the Heltec V3 "MQTT test" node running v1.17.0. These
+broker, refreshed from a fresh read-only test-lane capture on 2026-09-15.
+The observed node is the Heltec V3 "MQTT test" node running v1.17.1. These
 samples lock the **payload contract**:
 topic families `{root}/{iata}/{public_key}/{status,packets,neighbors}` and the
 JSON structure of each family, so no refactor can silently change what ukmesh
@@ -14,16 +14,32 @@ consumers receive.
   **Sanitized:** `stats.wifi_ssid` is replaced with `REDACTED`; no other
   fields carry site-identifying data. Do not un-redact.
 - `packet-tx.sample.json` - one outbound packet record.
-- `capture.sample.jsonl` - the sanitized status/packet lines used by CI for
-  comparator acceptance.
+- `packet-rx.sample.json` - one inbound packet record, including the
+  receive-only `SNR`, `RSSI`, `score`, and `duration` measurements.
+- `capture.sample.jsonl` - the sanitized status/tx/rx lines used by CI for
+  comparator acceptance. Each line is copied from the 2026-09-15 capture;
+  only `stats.wifi_ssid` is redacted.
 - `neighbors` fixture: to be added when a live sample is captured (the node
   publishes neighbours on its own schedule).
 
-The capture contained no neighbors payload, and the observed v1.17.0 image
-does not emit the newer clock/TLS/heap/queue-byte/outbox diagnostic fields
-implemented by the current builder. Those current fields are covered by the
-native production-builder tests; the live fixture will be refreshed again when
-the test-lane image publishes them. No synthetic live values are added here.
+The v1.17.1 refresh expands `stats` to 65 keys. It records the new clock/NTP,
+internal/PSRAM heap, build/serialization, transport/TLS, error, queue-byte,
+and outbox diagnostics captured from the device. Packet contracts are now
+direction-specific: tx remains the 13-key shape and rx is a separate 17-key
+shape. The captured `client_version` remains `meshcore-mqtt/v1.17.0`; that
+live value is retained rather than synthesized.
+
+Only genuinely soak-dynamic additions are normalized by the comparator:
+runtime clock outcome/source flags and attempt state; heap measurements;
+build/serialization and error/drop counters; last-error codes/times/ages;
+live TLS count; current queue/outbox byte counts; and the four rx radio
+measurements. Stable policy and capacity additions remain value-frozen:
+`ntp_validation_mode`, `effective_transport`, `tls_cap`, `publish_queue_cap`,
+`publish_queue_byte_cap`, `publish_queue_total_byte_cap`, and
+`publish_outbox_cap`.
+
+The capture still contained no neighbors payload. No synthetic neighbors or
+other live values are added here.
 
 ## Enforcement
 
@@ -32,10 +48,11 @@ the test-lane image publishes them. No synthetic live values are added here.
   `pio test -e native`.
 - `scripts/check-ukmesh-payload-fixtures.py` compares *new* captures against
   these fixtures. It checks added/removed keys, type-class changes, stable
-  scalar values, and every nested array element. Only the explicitly listed
-  volatile telemetry fields are normalized. Malformed capture lines, missing
-  families, and zero checked payloads fail closed; the command prints a count
-  summary. Use it during soaks / after port waves:
+  scalar values, and every nested array element. Tx and rx packet shapes are
+  selected by `direction` and both must be present in a capture. Only the
+  explicitly listed volatile telemetry fields are normalized. Malformed
+  capture lines, missing contracts, and zero checked payloads fail closed; the
+  command prints a count summary. Use it during soaks / after port waves:
 
       scripts/check-ukmesh-payload-fixtures.py --capture capture.jsonl \
           --allow-missing-neighbors-fixture
