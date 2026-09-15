@@ -13,7 +13,9 @@ Usage:
       --allow-missing-neighbors-fixture
 
 Options:
-  --family status|packet|neighbors  (default: auto-detect for single files)
+  --family status|packet|packet-tx|packet-rx|neighbors
+                                     (default: auto-detect for single files;
+                                      packet auto-selects by direction)
   --fixture-dir DIR                 (default: test/fixtures/ukmesh)
   --skip-other-origins              explicitly skip origin_id mismatches
   --allow-missing-neighbors-fixture explicitly acknowledge the unfrozen
@@ -33,10 +35,12 @@ REPO = Path(__file__).resolve().parent.parent
 DEFAULT_FIXTURES = REPO / "test" / "fixtures" / "ukmesh"
 FIXTURE_FILES = {
     "status": "status-online.sample.json",
-    "packet": "packet-tx.sample.json",
+    "packet-tx": "packet-tx.sample.json",
+    "packet-rx": "packet-rx.sample.json",
     "neighbors": "neighbors.sample.json",
 }
 EXPECTED_FAMILIES = tuple(FIXTURE_FILES)
+FAMILY_CHOICES = ("status", "packet", "packet-tx", "packet-rx", "neighbors")
 
 # These fields are intentionally volatile on a live node. Their types and
 # presence remain part of the contract; only their scalar values are ignored.
@@ -64,7 +68,6 @@ VOLATILE_FIELD_NAMES = frozenset(
         "ntp_sync_source",
         "ntp_sync_validated",
         "ntp_sync_fallback",
-        "ntp_validation_mode",
         "ntp_sync_age_ms",
         "ntp_attempt_generation",
         "ntp_last_attempt_age_ms",
@@ -131,9 +134,11 @@ VOLATILE_FIELD_NAMES = frozenset(
         "last_tls_err",
         "last_tls_stack_err",
         "last_tls_cert_verify_flags",
-        "effective_transport",
+        "last_sock_errno",
+        "last_connect_return_code",
+        "last_error_at_ms",
+        "last_error_age_ms",
         "tls_live",
-        "tls_cap",
         "heap_inactive",
         "broker_uri",
         "broker_username",
@@ -144,15 +149,11 @@ VOLATILE_FIELD_NAMES = frozenset(
         "session_packet_publishes",
         "publish_failures",
         "publish_queue_depth",
-        "publish_queue_cap",
         "publish_queue_drops",
         "publish_queue_byte_drops",
         "publish_queue_bytes",
-        "publish_queue_byte_cap",
         "publish_queue_total_bytes",
-        "publish_queue_total_byte_cap",
         "publish_outbox_size",
-        "publish_outbox_cap",
         "publish_outbox_drops",
         "connected",
         "neighbor_interval_s",
@@ -162,14 +163,24 @@ VOLATILE_FIELD_NAMES = frozenset(
         "rssi",
         "snr",
         "last_heard",
+        # Receive-only packet diagnostics are measurements of each reception.
+        "SNR",
+        "RSSI",
+        "score",
+        "duration",
     }
 )
+
+# The following v1.17.1 additions are intentionally absent from the volatile
+# set: ntp_validation_mode, effective_transport, tls_cap, publish_queue_cap,
+# publish_queue_byte_cap, publish_queue_total_byte_cap, and
+# publish_outbox_cap. They are build/configuration or resource-policy values,
+# not soak telemetry, so their captured scalar values remain frozen.
 
 # Dynamic fields can still have a constrained contract value. This catches a
 # typo such as status="stale" while allowing online/offline transitions.
 VALUE_DOMAINS = {
     "status": frozenset({"online", "offline"}),
-    "direction": frozenset({"tx", "rx"}),
 }
 
 _VOLATILE = object()
@@ -241,11 +252,20 @@ def _display(value):
         return repr(value)
 
 
+def packet_contract(obj):
+    if not isinstance(obj, dict) or obj.get("type") != "PACKET" or "raw" not in obj:
+        return None
+    direction = obj.get("direction")
+    if direction in ("tx", "rx"):
+        return f"packet-{direction}"
+    return None
+
+
 def detect_family(obj):
     if not isinstance(obj, dict):
         return None
     if obj.get("type") == "PACKET" and "raw" in obj:
-        return "packet"
+        return packet_contract(obj)
     if "status" in obj and "stats" in obj:
         return "status"
     if "neighbors" in obj or ("origin_id" in obj and "count" in obj):
@@ -262,6 +282,12 @@ def classify_topic(topic):
     if leaf in ("neighbors", "neighbours"):
         return "neighbors"
     return None
+
+
+def contract_for_topic_family(topic_family, obj):
+    if topic_family != "packet":
+        return topic_family
+    return packet_contract(obj)
 
 
 def load_fixtures(fixdir):
@@ -403,8 +429,13 @@ def run_single(args, fixdir):
         return 1
 
     family = args.family or detect_family(obj)
+    if family == "packet":
+        family = packet_contract(obj)
     if family is None:
-        print("ERROR: could not detect family; use --family", file=sys.stderr)
+        print(
+            "ERROR: could not detect contract; packet payloads require direction tx or rx",
+            file=sys.stderr,
+        )
         print_summary(stats)
         return 2
 
@@ -494,10 +525,20 @@ def run_capture(args, fixdir):
             print(f"ERROR: capture line {line_number} has malformed JSON: {exc}", file=sys.stderr)
             continue
 
-        family = classify_topic(topic)
-        if family is None:
+        topic_family = classify_topic(topic)
+        if topic_family is None:
             stats["unknown_topics"] += 1
             print(f"ERROR: capture line {line_number} has an unknown topic: {topic}", file=sys.stderr)
+            continue
+
+        family = contract_for_topic_family(topic_family, obj)
+        if family is None:
+            stats["failed"] += 1
+            print(
+                f"[packet] CONTRACT CHANGE DETECTED line {line_number}: "
+                "direction must be tx or rx",
+                file=sys.stderr,
+            )
             continue
 
         family_counts[family] += 1
@@ -557,7 +598,7 @@ def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("payload", nargs="?", help="payload JSON file")
     ap.add_argument("--capture", help="jsonl file of 'topic payload' lines")
-    ap.add_argument("--family", choices=EXPECTED_FAMILIES)
+    ap.add_argument("--family", choices=FAMILY_CHOICES)
     ap.add_argument("--fixture-dir", default=str(DEFAULT_FIXTURES))
     origins = ap.add_mutually_exclusive_group()
     origins.add_argument(
