@@ -529,7 +529,7 @@ if [ "${MESHCORE_MQTT_ENABLE_OTA}" != "0" ] && [ "${MESHCORE_MQTT_ENABLE_OTA}" !
   exit 1
 fi
 prompt_value MESHCORE_MQTT_MODEL "Model label" "${MESHCORE_MQTT_MODEL:-$MESHCORE_MQTT_BASE_ENV}"
-prompt_value MESHCORE_MQTT_CLIENT_VERSION "Client version" "meshcore-mqtt/v1.17.0"
+prompt_value MESHCORE_MQTT_CLIENT_VERSION "Client version" "meshcore-mqtt/v1.17.1"
 
 prompt_value MESHCORE_MQTT_BROKER1_URI "MQTT broker 1 URI default" "${MESHCORE_MQTT_BROKER1_URI:-${MESHCORE_MQTT_URI:-}}"
 prompt_value MESHCORE_MQTT_BROKER1_USERNAME "MQTT broker 1 username default" "${MESHCORE_MQTT_BROKER1_USERNAME:-${MESHCORE_MQTT_USERNAME:-}}"
