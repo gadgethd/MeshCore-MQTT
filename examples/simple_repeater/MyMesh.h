@@ -34,6 +34,7 @@
 #include <helpers/StatsFormatHelper.h>
 #include <helpers/TxtDataHelpers.h>
 #include <helpers/RegionMap.h>
+#include <helpers/RoutingPolicy.h>
 #include "RateLimiter.h"
 
 #ifdef WITH_BRIDGE
@@ -70,11 +71,11 @@ struct NeighbourInfo {
 };
 
 #ifndef FIRMWARE_BUILD_DATE
-  #define FIRMWARE_BUILD_DATE   "9 Aug 2026"
+  #define FIRMWARE_BUILD_DATE   "14 Aug 2026"
 #endif
 
 #ifndef FIRMWARE_VERSION
-  #define FIRMWARE_VERSION   "v1.17.0"
+  #define FIRMWARE_VERSION   "v1.17.1"
 #endif
 
 #define FIRMWARE_ROLE "repeater"
@@ -193,6 +194,7 @@ public:
   const char* getRole() override { return FIRMWARE_ROLE; }
   const char* getNodeName() { return _prefs.node_name; }
   String buildMqttStatusStatsJson() const;
+#if defined(ESP32) && defined(WITH_MQTT_REPORTER)
   uint32_t getForwardSuccessCount() const { return getNumSentFlood() + getNumSentDirect(); }
   uint32_t getForwardFloodSuccessCount() const { return getNumSentFlood(); }
   uint32_t getForwardDirectSuccessCount() const { return getNumSentDirect(); }
@@ -200,6 +202,7 @@ public:
   uint32_t getTxQueueDepth() const { return _mgr->getOutboundCount(0xFFFFFFFF); }
   uint32_t getTxQueuePeakDepth() const { return tx_queue_peak_len; }
   int8_t getTxPowerDbm() const { return _prefs.tx_power_dbm; }
+#endif
   bool resolvePacketSourceId(const mesh::Packet *packet, uint8_t out_id[PUB_KEY_SIZE]);
   NodePrefs* getNodePrefs() {
     return &_prefs;

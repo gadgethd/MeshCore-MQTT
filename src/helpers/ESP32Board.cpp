@@ -15,7 +15,7 @@
 #include <SPIFFS.h>
 #include <helpers/MQTTOTABarrier.h>
 
-#if defined(WITH_MQTT_REPORTER)
+#if defined(ESP32) && defined(WITH_MQTT_REPORTER)
 extern "C" bool meshcore_mqtt_stop_for_ota();
 extern "C" bool meshcore_mqtt_can_flash_after_stop();
 extern "C" bool meshcore_mqtt_resume_after_ota_abort();
@@ -66,7 +66,7 @@ bool requireOTAAuthentication(AsyncWebServerRequest* request) {
 }
 
 bool allowOTAFlashIO() {
-#if defined(WITH_MQTT_REPORTER)
+#if defined(ESP32) && defined(WITH_MQTT_REPORTER)
   return ota_barrier.allowFlashIO(meshcore_mqtt_can_flash_after_stop());
 #else
   return ota_barrier.allowFlashIO(true);
@@ -74,7 +74,7 @@ bool allowOTAFlashIO() {
 }
 
 void resumeMQTTAfterOTAAbort() {
-#if defined(WITH_MQTT_REPORTER)
+#if defined(ESP32) && defined(WITH_MQTT_REPORTER)
   if (!meshcore_mqtt_resume_after_ota_abort()) {
     MESH_DEBUG_PRINTLN("OTA: MQTT restart withheld; previous stop remains unproven");
   }
@@ -100,7 +100,7 @@ bool ESP32Board::startOTAUpdate(const char* id, char reply[]) {
   }
 
   bool mqtt_stop_clean = true;
-#if defined(WITH_MQTT_REPORTER)
+#if defined(ESP32) && defined(WITH_MQTT_REPORTER)
   mqtt_stop_clean = meshcore_mqtt_stop_for_ota();
 #endif
   ota_barrier.onStopComplete(mqtt_stop_clean);
@@ -120,7 +120,7 @@ bool ESP32Board::startOTAUpdate(const char* id, char reply[]) {
   ota_previous_inhibit_sleep = inhibit_sleep;
   inhibit_sleep = true;
 
-#if defined(WITH_MQTT_REPORTER)
+#if defined(ESP32) && defined(WITH_MQTT_REPORTER)
   // AsyncWebServer listens on every active interface. Stop station networking
   // before opening the listener so OTA cannot be reached from the site LAN.
   WiFi.setAutoReconnect(false);
@@ -128,7 +128,7 @@ bool ESP32Board::startOTAUpdate(const char* id, char reply[]) {
 #endif
   if (!WiFi.mode(WIFI_AP) || !WiFi.softAP(OTA_AP_SSID, ap_password)) {
     WiFi.mode(ota_previous_wifi_mode);
-#if defined(WITH_MQTT_REPORTER)
+#if defined(ESP32) && defined(WITH_MQTT_REPORTER)
     WiFi.setAutoReconnect(true);
 #endif
     inhibit_sleep = ota_previous_inhibit_sleep;
@@ -187,7 +187,7 @@ void ESP32Board::serviceOTAUpdate() {
   ota_server->end();
   WiFi.softAPdisconnect(true);
   WiFi.mode(ota_previous_wifi_mode);
-#if defined(WITH_MQTT_REPORTER)
+#if defined(ESP32) && defined(WITH_MQTT_REPORTER)
   WiFi.setAutoReconnect(true);
 #endif
   inhibit_sleep = ota_previous_inhibit_sleep;
