@@ -118,8 +118,16 @@ EOF
   if [ -f "${build_subdir}/partitions.bin" ]; then
     cp "${build_subdir}/partitions.bin" "${OUT_DIR}/${base_env}/${firmware_name}-partitions.bin"
   fi
-  if [ -f "${build_subdir}/boot_app0.bin" ]; then
-    cp "${build_subdir}/boot_app0.bin" "${OUT_DIR}/${base_env}/${firmware_name}-boot_app0.bin"
+  # boot_app0 (OTA data initializer, offset 0xe000) is not emitted into the
+  # build dir by PlatformIO; ship the framework-bundled copy, which is
+  # byte-identical to the image embedded in the merged full build, so the
+  # flasher importer always receives a complete segment set.
+  local boot_app0_src="${build_subdir}/boot_app0.bin"
+  if [ ! -f "${boot_app0_src}" ]; then
+    boot_app0_src="$(find "${PLATFORMIO_CORE_DIR:-${HOME}/.platformio}/packages" -maxdepth 5 -path '*framework-arduinoespressif32*/tools/partitions/boot_app0.bin' 2>/dev/null | head -n1)"
+  fi
+  if [ -n "${boot_app0_src}" ] && [ -f "${boot_app0_src}" ]; then
+    cp "${boot_app0_src}" "${OUT_DIR}/${base_env}/${firmware_name}-boot_app0.bin"
   fi
 
   echo "  OK: ${base_env}"
@@ -138,6 +146,9 @@ fi
 
 echo "Found ${#ENVS[@]} ESP repeater targets"
 echo "Firmware version: ${FIRMWARE_VERSION:-unknown}"
+# Stamp the client version from the build's firmware version (tag releases pass
+# FIRMWARE_VERSION, e.g. v1.17.1) so published metadata can never lag a release.
+export MESHCORE_MQTT_CLIENT_VERSION="${MESHCORE_MQTT_CLIENT_VERSION:-meshcore-mqtt/${FIRMWARE_VERSION:-unknown}}"
 echo
 
 rm -rf "${OUT_DIR}"

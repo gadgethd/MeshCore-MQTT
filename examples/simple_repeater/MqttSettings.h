@@ -180,7 +180,7 @@
 #endif
 
 #ifndef MQTT_CLIENT_VERSION
-  #define MQTT_CLIENT_VERSION "meshcore-mqtt/v1.17.0"
+  #define MQTT_CLIENT_VERSION "meshcore-mqtt/v1.17.1"
 #endif
 
 #ifndef MQTT_MODEL
