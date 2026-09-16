@@ -28,7 +28,14 @@ runs:
         if [[ "${GITHUB_REF}" == refs/tags/* ]]; then
           # triggered by a tag push (e.g: refs/tags/companion-v1.2.3)
           GIT_TAG_NAME="${GITHUB_REF#refs/tags/}"
-          VERSION_STRING="${GIT_TAG_NAME##*-}"
+          if [[ "${GIT_TAG_NAME}" =~ -v[0-9] ]]; then
+            # keep the full version, including a trailing -revN
+            # e.g. mqtt-repeater-v1.17.1-rev2 -> v1.17.1-rev2
+            VERSION_STRING="v${GIT_TAG_NAME#*-v}"
+          else
+            # e.g. v1.16.0-rev3 -> rev3 (legacy behaviour)
+            VERSION_STRING="${GIT_TAG_NAME##*-}"
+          fi
         else
           # triggered by a workflow dispatch (e.g: refs/heads/main)
           # strip "refs/heads/" prefix and replace any remaining "/" with "-" to protect file paths
