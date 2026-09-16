@@ -87,6 +87,8 @@ This document provides an overview of CLI commands that can be sent to MeshCore 
 **Usage:**
 - `start ota`
 
+**Notes:** Opens a temporary isolated Wi-Fi access point (`MeshCore-OTA`) and serves the update page for 10 minutes; the serial reply prints the session AP password, HTTP credentials, and update URL. Wi-Fi OTA is included in builds for boards with 16 MB or more of flash; builds without it reply `Error: OTA not supported in this build`. See [Wi-Fi OTA Updates](../meshcoremqtt-docs/wifi-ota.md) for the full walkthrough.
+
 ---
 
 ### Erase/Factory Reset
