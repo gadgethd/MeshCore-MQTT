@@ -10,6 +10,7 @@ It is separate from the upstream `MeshCore/docs` tree on purpose. The pages here
 - [MQTT Serial Command Reference](./mqtt-serial-commands.md)
 - [MQTT Serial Settings Reference](./mqtt-serial-settings.md)
 - [MQTT Serial Behavior and Examples](./mqtt-serial-behavior.md)
+- [Wi-Fi OTA Updates](./wifi-ota.md)
 
 ## Scope
 

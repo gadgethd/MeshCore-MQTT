@@ -208,7 +208,7 @@ void CommonCLI::handleCommand(uint32_t sender_timestamp, char* command, char* re
         strcpy(reply, "ERR: clock cannot go backwards");
       }
     } else if (memcmp(command, "start ota", 9) == 0) {
-      if (!_board->startOTAUpdate(_prefs->node_name, reply)) {
+      if (!_board->startOTAUpdate(_prefs->node_name, reply) && reply[0] == '\0') {
         strcpy(reply, "Error");
       }
     } else if (memcmp(command, "clock", 5) == 0) {

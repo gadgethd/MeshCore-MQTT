@@ -108,6 +108,23 @@ Notes:
 - Any failed save returns `Err - save failed`.
 - Unknown keys return `Err - save failed` because key validation and persistence are handled together.
 
+### Clearing credentials
+
+`username` and `password` accept an empty value, which clears the stored credential:
+
+```text
+set mqtt.1.username
+set mqtt.1.username ""
+set mqtt.1.password
+```
+
+Notes:
+
+- `set mqtt.1.username` with no value clears the field. This shorthand is accepted for `username` and `password` only; every other key requires a value.
+- A value of `""` (two double quotes) is stored as an empty string.
+- With both username and password empty, the reporter connects without credentials.
+- Non-empty credentials are only accepted for secure broker URIs (`mqtts://`, `wss://`). Saving a non-empty username or password for a plaintext `mqtt://` or `ws://` broker is refused and the previous value is kept.
+
 ## Reconnect Commands
 
 ### `mqtt reconnect`
@@ -155,6 +172,6 @@ Important:
 - `OK`: command accepted and completed
 - `Err - serial only`: command was not issued on the serial console
 - `Err - broker 1-6`: invalid broker number
-- `Err - bad params`: malformed `set mqtt...` command
+- `Err - bad params`: malformed `set mqtt...` command (a bare `username`/`password` key is accepted and clears the field; every other key requires a value)
 - `Err - unknown mqtt key`: invalid `get mqtt.<key>` key
 - `Err - save failed`: invalid `set mqtt.<key>` key or storage save failure

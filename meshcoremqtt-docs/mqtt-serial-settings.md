@@ -83,6 +83,7 @@ The URI string is passed through to the ESP-IDF MQTT client.
 - Example: `set mqtt.1.username observer`
 - Stored length: up to 63 characters
 - Empty value allowed: yes
+- Clearing: `set mqtt.1.username` with no value, or `set mqtt.1.username ""`
 - Default:
   - broker 1: build-time `MQTT_BROKER1_USERNAME`, which may inherit `MQTT_USERNAME`
   - brokers 2-6: usually empty
@@ -93,6 +94,7 @@ The URI string is passed through to the ESP-IDF MQTT client.
 - Example: `set mqtt.1.password secret-value`
 - Stored length: up to 63 characters
 - Empty value allowed: yes
+- Clearing: `set mqtt.1.password` with no value, or `set mqtt.1.password ""`
 - Default:
   - broker 1: build-time `MQTT_BROKER1_PASSWORD`, which may inherit `MQTT_PASSWORD`
   - brokers 2-6: usually empty
@@ -101,6 +103,8 @@ Notes:
 
 - `show mqtt` masks this field as `******`
 - `get mqtt.1.password` returns the real stored value
+- With both username and password empty, the reporter connects without credentials
+- Non-empty credentials are refused for plaintext `mqtt://`/`ws://` brokers; use `mqtts://` or `wss://`
 
 ### `mqtt.1.topic.root`
 

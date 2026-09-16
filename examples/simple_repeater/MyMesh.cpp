@@ -1,6 +1,7 @@
 #include "MyMesh.h"
 #include <algorithm>
 #include <helpers/MqttCommandReply.h>
+#include <helpers/MqttCredentialSet.h>
 
 #if defined(ESP32) && defined(WITH_MQTT_REPORTER)
   #include "MqttReporter.h"
@@ -1374,12 +1375,18 @@ bool MyMesh::handleMqttCommand(uint32_t sender_timestamp, char *command, char *r
     char *key = command + 9;
     char *value = strchr(key, ' ');
     if (value == NULL) {
-      writeMqttReply(reply, reply_size, "Err - bad params");
-      return true;
+      // A bare credential key clears it (blank username/password = no auth /
+      // anonymous broker); any other key still requires an explicit value.
+      if (!mqtt_credential_set::isCredentialKey(key)) {
+        writeMqttReply(reply, reply_size, "Err - bad params");
+        return true;
+      }
+      value = key + strlen(key);  // points at the terminator -> blank
+    } else {
+      *value++ = 0;
+      while (*value == ' ') value++;
+      value = mqtt_credential_set::normalizeCredentialValue(value);
     }
-
-    *value++ = 0;
-    while (*value == ' ') value++;
 
     if (mqtt_reporter.setConfigValue(key, value)) {
       writeMqttReply(reply, reply_size, "OK");
