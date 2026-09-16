@@ -60,11 +60,171 @@ for ini_path in sorted((repo_root / "variants").glob("*/platformio.ini")):
 PY
 }
 
+# Resolve an environment's effective board and flash size.
+# OTA is enabled only when the resolved size is at least 16 MB.  Unknown or
+# malformed sizes deliberately fall back to disabled.
+get_board_flash_info() {
+  local env_name="$1"
+
+  python3 - "${REPO_ROOT}" "${PLATFORMIO_CORE_DIR}" "${env_name}" <<'PY'
+import json
+import re
+import sys
+from pathlib import Path
+
+repo_root = Path(sys.argv[1])
+platformio_core_dir = Path(sys.argv[2])
+env_name = sys.argv[3]
+
+
+def strip_inline_comment(value):
+    return value.split(";", 1)[0].strip()
+
+
+def read_ini(path):
+    sections = {}
+    current = None
+    for raw_line in path.read_text(encoding="utf-8", errors="ignore").splitlines():
+        line = raw_line.strip()
+        if not line or line.startswith((";", "#")):
+            continue
+        section_match = re.match(r"^\[([^\]]+)\]$", line)
+        if section_match:
+            current = section_match.group(1).strip()
+            sections.setdefault(current, {})
+            continue
+        if current is None or "=" not in line:
+            continue
+        key, value = line.split("=", 1)
+        key = key.strip().lower()
+        if key in {"board", "board_upload.flash_size", "extends"}:
+            sections[current][key] = strip_inline_comment(value)
+    return sections
+
+
+def find_section(sections, name):
+    candidates = [name]
+    if name.startswith("env:"):
+        candidates.append(name[4:])
+    else:
+        candidates.append(f"env:{name}")
+    return next((candidate for candidate in candidates if candidate in sections), None)
+
+
+def resolve_section(sections, name, stack=None):
+    stack = set() if stack is None else stack
+    section_name = find_section(sections, name)
+    if section_name is None or section_name in stack:
+        return {}
+
+    section = sections[section_name]
+    resolved = {}
+    next_stack = stack | {section_name}
+    for parent in re.split(r"\s*,\s*", section.get("extends", "")):
+        parent = parent.strip()
+        if parent:
+            resolved.update(resolve_section(sections, parent, next_stack))
+    resolved.update({key: value for key, value in section.items() if key != "extends"})
+    return resolved
+
+
+def leading_mb(value):
+    match = re.match(r"^\s*(\d+)", str(value))
+    return match.group(1) if match else None
+
+
+def json_flash_size(path):
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+        return leading_mb(data.get("upload", {}).get("flash_size", ""))
+    except (OSError, ValueError, AttributeError):
+        return None
+
+
+variant_path = None
+sections = None
+for candidate in sorted((repo_root / "variants").glob("*/platformio.ini")):
+    candidate_sections = read_ini(candidate)
+    if f"env:{env_name}" in candidate_sections:
+        variant_path = candidate
+        sections = candidate_sections
+        break
+
+if variant_path is None:
+    print("-\tunknown\tunknown")
+    raise SystemExit
+
+effective = resolve_section(sections, f"env:{env_name}")
+board = effective.get("board", "").strip()
+if not board:
+    board = next(
+        (values.get("board", "").strip() for values in sections.values() if values.get("board")),
+        "",
+    )
+
+if not board:
+    print("-\tunknown\tunknown")
+    raise SystemExit
+
+variant_mb = leading_mb(effective.get("board_upload.flash_size", ""))
+if variant_mb is not None:
+    print(f"{board.lower()}\t{variant_mb}\tvariant_override")
+    raise SystemExit
+
+repo_board = repo_root / "boards" / f"{board}.json"
+repo_mb = json_flash_size(repo_board) if repo_board.is_file() else None
+if repo_mb is not None:
+    print(f"{board.lower()}\t{repo_mb}\trepo_board_json")
+    raise SystemExit
+
+platformio_board = (
+    platformio_core_dir
+    / "platforms"
+    / "espressif32"
+    / "boards"
+    / f"{board}.json"
+)
+platformio_mb = json_flash_size(platformio_board) if platformio_board.is_file() else None
+if platformio_mb is not None:
+    print(f"{board.lower()}\t{platformio_mb}\tplatformio_board_json")
+    raise SystemExit
+
+print(f"{board.lower()}\tunknown\tunknown")
+PY
+}
+
+run_pio() {
+  if [ "${MQTT_CI_VERBOSE:-0}" = "1" ]; then
+    "${PIO_BIN}" "$@"
+  else
+    "${PIO_BIN}" "$@" > /dev/null 2>&1
+  fi
+}
+
+run_mqtt_pio() {
+  local ota_env_value="$1"
+  shift
+
+  if [ "${ota_env_value}" = "1" ]; then
+    MESHCORE_MQTT_ENABLE_OTA=1 run_pio "$@"
+  else
+    MESHCORE_MQTT_ENABLE_OTA=0 run_pio "$@"
+  fi
+}
+
 build_mqtt_firmware() {
   local base_env="$1"
   local version="${FIRMWARE_VERSION:-unknown}"
   local build_env
   build_env="$(printf '%s' "${base_env}" | tr -c '[:alnum:]_' '_')_mqtt_ci"
+
+  local ota_enabled="${OTA_ENABLED[${base_env}]:-0}"
+  local ota_flag="  -D DISABLE_WIFI_OTA=1"
+  local ota_env_value=0
+  if [ "${ota_enabled}" = "1" ]; then
+    ota_flag="  -D ENABLE_WIFI_OTA=1"
+    ota_env_value=1
+  fi
 
   local temp_conf
   temp_conf=$(mktemp /tmp/meshcore-mqtt-ci-XXXXXX.ini)
@@ -78,23 +238,42 @@ extends = env:${base_env}
 extra_scripts =
   \${env:${base_env}.extra_scripts}
   pre:arch/esp32/extra_scripts/mqtt_build_vars.py
+EOF
+
+  if [ "${ota_enabled}" = "1" ]; then
+    cat >> "${temp_conf}" <<EOF
+build_unflags =
+  \${env:${base_env}.build_unflags}
+  -D DISABLE_WIFI_OTA=1
+EOF
+  fi
+
+  cat >> "${temp_conf}" <<EOF
 build_flags =
   \${env:${base_env}.build_flags}
   -D WITH_MQTT_REPORTER=1
   -D AUTO_OFF_MILLIS=20000
-  -D DISABLE_WIFI_OTA=1
+${ota_flag}
   -D MESHCORE_GIT_COMMIT=\"${GIT_COMMIT}\"
 EOF
 
-  echo "  Building ${base_env} (env: ${build_env})..."
-  if ! MESHCORE_MQTT_ENABLE_OTA=0 "${PIO_BIN}" run -c "${temp_conf}" -e "${build_env}" > /dev/null 2>&1; then
+  if [ "${ota_enabled}" = "1" ]; then
+    cat >> "${temp_conf}" <<EOF
+lib_deps =
+  \${env:${base_env}.lib_deps}
+  \${esp32_ota.lib_deps}
+EOF
+  fi
+
+  echo "  Building ${base_env} (env: ${build_env}; flash ${FLASH_MB[${base_env}]} MB; OTA $([ "${ota_enabled}" = "1" ] && printf enabled || printf disabled))..."
+  if ! run_mqtt_pio "${ota_env_value}" run -c "${temp_conf}" -e "${build_env}"; then
     echo "  FAILED: ${base_env} compile error"
     rm -f "${temp_conf}"
     return 1
   fi
 
   # Run mergebin to get the full flash image
-  if ! MESHCORE_MQTT_ENABLE_OTA=0 "${PIO_BIN}" run -c "${temp_conf}" -e "${build_env}" -t mergebin > /dev/null 2>&1; then
+  if ! run_mqtt_pio "${ota_env_value}" run -c "${temp_conf}" -e "${build_env}" -t mergebin; then
     echo "  FAILED: ${base_env} mergebin error"
     rm -f "${temp_conf}"
     return 1
@@ -151,13 +330,65 @@ echo "Firmware version: ${FIRMWARE_VERSION:-unknown}"
 export MESHCORE_MQTT_CLIENT_VERSION="${MESHCORE_MQTT_CLIENT_VERSION:-meshcore-mqtt/${FIRMWARE_VERSION:-unknown}}"
 echo
 
+declare -A BOARD_NAME FLASH_MB FLASH_SOURCE OTA_ENABLED
+for env in "${ENVS[@]}"; do
+  IFS=$'\t' read -r BOARD_NAME["${env}"] FLASH_MB["${env}"] FLASH_SOURCE["${env}"] < <(get_board_flash_info "${env}")
+  if [[ "${FLASH_MB[${env}]}" =~ ^[0-9]+$ ]] && (( FLASH_MB[${env}] >= 16 )); then
+    OTA_ENABLED["${env}"]=1
+  else
+    OTA_ENABLED["${env}"]=0
+  fi
+done
+
+echo "OTA decision table"
+echo "env | board | flash MB | OTA enabled/disabled (source of size)"
+for env in "${ENVS[@]}"; do
+  local_decision=disabled
+  if [ "${OTA_ENABLED[${env}]}" = "1" ]; then
+    local_decision=enabled
+  fi
+  printf '%s | %s | %s | %s (%s)\n' \
+    "${env}" "${BOARD_NAME[${env}]}" "${FLASH_MB[${env}]}" \
+    "${local_decision}" "${FLASH_SOURCE[${env}]}"
+done
+
 rm -rf "${OUT_DIR}"
 mkdir -p "${OUT_DIR}"
 
 PASS=()
 FAIL=()
 
-for env in "${ENVS[@]}"; do
+BUILD_ENVS=("${ENVS[@]}")
+if [ -n "${MQTT_CI_ONLY:-}" ]; then
+  selected_env="${MQTT_CI_ONLY}"
+  selected_base=""
+  for env in "${ENVS[@]}"; do
+    if [ "${env}" = "${selected_env}" ]; then
+      selected_base="${env}"
+      break
+    fi
+  done
+  if [ -z "${selected_base}" ]; then
+    # Convenience alias: MQTT_CI_ONLY=foo_repeater_mqtt selects the generated
+    # MQTT build based on the existing foo_repeater environment.
+    mqtt_base="${selected_env%_mqtt}"
+    for env in "${ENVS[@]}"; do
+      if [ "${env}" = "${mqtt_base}" ]; then
+        selected_base="${env}"
+        break
+      fi
+    done
+  fi
+  if [ -z "${selected_base}" ]; then
+    echo "MQTT_CI_ONLY did not match a discovered repeater env: ${selected_env}" >&2
+    exit 1
+  fi
+  BUILD_ENVS=("${selected_base}")
+  echo
+  echo "Build filter: ${selected_env} (generated from ${selected_base})"
+fi
+
+for env in "${BUILD_ENVS[@]}"; do
   if build_mqtt_firmware "${env}"; then
     PASS+=("${env}")
   else
