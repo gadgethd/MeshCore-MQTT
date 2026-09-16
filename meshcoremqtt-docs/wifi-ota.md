@@ -27,11 +27,13 @@ Boards with 8 MB of flash (for example Heltec V3) cannot hold the firmware image
 5. Join `MeshCore-OTA`, open `http://192.168.4.1/update`, authenticate with the printed HTTP credentials, and upload the `...-update.bin` asset for your board from the release.
 6. The upload writes the inactive application slot and the device reboots into the new image. Mesh and MQTT resume automatically.
 
-If nothing is uploaded, the window closes after 10 minutes and the device returns to normal operation.
+If nothing is uploaded, the window closes after 10 minutes and the device returns to normal operation. Only one OTA window can be opened per boot: sending `start ota` again without rebooting replies `Error: reboot before starting OTA again` — reboot the device to open a new window.
 
 ## Failure replies
 
 - `Error: OTA not supported in this build` — the build was compiled without Wi-Fi OTA.
+- `Error: OTA already active` — a window is currently open; use it or wait for it to expire.
+- `Error: reboot before starting OTA again` — a window has already been used since this boot; reboot the device first.
 - `Error: MQTT stop unverified; OTA flash refused` — the reporter did not verify a clean stop; the flash gate stayed closed for safety.
 - `Error: could not start isolated OTA access point` — the access point could not be raised; the device stays on its previous Wi-Fi mode.
 
