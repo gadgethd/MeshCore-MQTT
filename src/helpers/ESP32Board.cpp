@@ -203,7 +203,8 @@ bool ESP32Board::isOTAUpdateActive() const {
 
 #else
 bool ESP32Board::startOTAUpdate(const char* id, char reply[]) {
-  return false; // not supported
+  snprintf(reply, 160, "Error: OTA not supported in this build");
+  return false;
 }
 
 void ESP32Board::serviceOTAUpdate() {
