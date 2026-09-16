@@ -3334,6 +3334,7 @@
 <h3 id="start-an-over-the-air-ota-firmware-update">Start an Over-The-Air (OTA) firmware update</h3>
 <p><strong>Usage:</strong>
 - <code>start ota</code></p>
+<p><strong>Notes:</strong> Opens a temporary isolated Wi-Fi access point (<code>MeshCore-OTA</code>) and serves the update page for 10 minutes; the serial reply prints the session AP password, HTTP credentials, and update URL. Wi-Fi OTA is included in builds for boards with 16 MB or more of flash; builds without it reply <code>Error: OTA not supported in this build</code>. See <a href="../meshcoremqtt-docs/wifi-ota.md">Wi-Fi OTA Updates</a> for the full walkthrough.</p>
 <hr />
 <h3 id="erasefactory-reset">Erase/Factory Reset</h3>
 <p><strong>Usage:</strong>
