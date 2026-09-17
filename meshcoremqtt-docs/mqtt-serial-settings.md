@@ -121,6 +121,13 @@ Supported tokens:
 - `{IATA}` or `<IATA>`
 - `{PUBLIC_KEY}` or `<PUBLIC_KEY>`
 
+Topic-root roles are evaluated after these tokens are expanded:
+
+- A root ending in `/status` is a status-only feed. It publishes status and its configured retained LWT, but no packets or neighbors.
+- To split the families across a broker pair, use a primary root ending in `/packets` and a second root ending in `/status`, with the same URI and IATA. The primary keeps packets and neighbors, publishes no status, and has no LWT; the status entry publishes status only.
+- A `/status` entry using a different URI is an additional status-only mirror, and a lone `/status` entry is still status-only.
+- A root with neither `/packets` nor `/status` keeps the existing full behavior when it is not part of a matching pair.
+
 ### `mqtt.1.iata`
 
 - Purpose: site or location code inserted into topics

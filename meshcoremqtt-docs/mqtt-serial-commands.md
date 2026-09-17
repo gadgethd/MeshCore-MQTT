@@ -108,6 +108,11 @@ Notes:
 - Any failed save returns `Err - save failed`.
 - Unknown keys return `Err - save failed` because key validation and persistence are handled together.
 
+Topic-root roles:
+
+- A root ending in `/status` is status-only. A same-URI, same-IATA `/packets` + `/status` pair sends packets and neighbors through the primary and status through the status entry; the primary has no status publish or LWT.
+- Token expansion happens before the suffix is evaluated.
+
 ### Clearing credentials
 
 `username` and `password` accept an empty value, which clears the stored credential:

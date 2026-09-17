@@ -132,6 +132,8 @@ private:
     char status_topic[384];
     char packets_topic[384];
     char neighbors_topic[384];
+    bool status_only;
+    bool status_suppressed;
     char *offline_payload;
     size_t offline_payload_len;
     unsigned long last_status_publish;
