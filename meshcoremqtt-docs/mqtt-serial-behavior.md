@@ -58,11 +58,17 @@ If the topic root ends with `/packets`:
 If the topic root ends with `/status`:
 
 - status publishes use that path as-is
-- packet publishes swap the suffix to `/packets`
+- this broker entry publishes status only; it does not publish packets or neighbors
 
 If the topic root ends with neither suffix:
 
 - both topic builders use the topic root unchanged
+
+When an enabled non-`/status` entry and an enabled `/status` entry have the same
+broker URI and IATA, they form a split pair. The non-`/status` entry keeps packet
+and neighbor publishes but suppresses status publishes and its LWT; the `/status`
+entry remains status-only. A non-paired root, including a bare root, keeps the
+existing full behavior.
 
 Recommended practice:
 

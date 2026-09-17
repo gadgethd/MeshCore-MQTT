@@ -3,6 +3,7 @@
 #if defined(ESP32) && defined(WITH_MQTT_REPORTER)
 
 #include "MyMesh.h"
+#include "helpers/MqttBrokerRoles.h"
 #include "helpers/MqttPayloadBuilders.h"
 
 #include <esp_crt_bundle.h>
@@ -356,6 +357,8 @@ MqttReporter::MqttReporter(MyMesh &mesh, mesh::RTCClock &clock)
     _clients[i].status_topic[0] = '\0';
     _clients[i].packets_topic[0] = '\0';
     _clients[i].neighbors_topic[0] = '\0';
+    _clients[i].status_only = false;
+    _clients[i].status_suppressed = false;
     _clients[i].offline_payload = nullptr;
     _clients[i].offline_payload_len = 0;
     _clients[i].last_status_publish = 0;
@@ -813,6 +816,7 @@ void MqttReporter::publishRxPacket(mesh::Packet *pkt, int len, float score, int 
 
   for (int i = 0; i < MQTT_MAX_BROKERS; i++) {
     if (_clients[i].connected && _clients[i].client != nullptr) {
+      if (_clients[i].status_only) continue;
       enqueuePublish(i, _clients[i].packets_topic, _build_buffer, payload_len,
                      0, false, false);
     }
@@ -856,6 +860,7 @@ void MqttReporter::publishTxPacket(mesh::Packet *pkt, int len) {
 
   for (int i = 0; i < MQTT_MAX_BROKERS; i++) {
     if (_clients[i].connected && _clients[i].client != nullptr) {
+      if (_clients[i].status_only) continue;
       enqueuePublish(i, _clients[i].packets_topic, _build_buffer, payload_len,
                      0, false, false);
     }
@@ -900,6 +905,7 @@ void MqttReporter::publishTxFail(mesh::Packet *pkt, int len, int reason) {
 
   for (int i = 0; i < MQTT_MAX_BROKERS; i++) {
     if (_clients[i].connected && _clients[i].client != nullptr) {
+      if (_clients[i].status_only) continue;
       enqueuePublish(i, _clients[i].packets_topic, _build_buffer, payload_len,
                      0, false, false);
     }
@@ -920,6 +926,32 @@ void MqttReporter::ensureIdentityStrings() {
   }
 
   if (!_identity_strings_dirty) return;
+
+  mqtt_broker_roles::BrokerEntry role_entries[MQTT_MAX_BROKERS] = {};
+  mqtt_broker_roles::Role roles[MQTT_MAX_BROKERS] = {};
+  String effective_roots[MQTT_MAX_BROKERS];
+  for (int i = 0; i < MQTT_MAX_BROKERS; i++) {
+    const MqttBrokerConfig &b = _settings.broker(i);
+    effective_roots[i] = expandTopicTokens(b.topic_root, b.iata, _origin_id);
+    role_entries[i].enabled = b.enabled;
+    role_entries[i].effective_root = effective_roots[i].c_str();
+    role_entries[i].uri = b.uri;
+    role_entries[i].iata = b.iata;
+  }
+  mqtt_broker_roles::classify(role_entries, MQTT_MAX_BROKERS, roles);
+
+  for (int i = 0; i < MQTT_MAX_BROKERS; i++) {
+    const bool role_changed =
+        _clients[i].status_only != roles[i].status_only ||
+        _clients[i].status_suppressed != roles[i].status_suppressed;
+    _clients[i].status_only = roles[i].status_only;
+    _clients[i].status_suppressed = roles[i].status_suppressed;
+    if (role_changed && (_clients[i].client != nullptr || _clients[i].started)) {
+      // LWT is fixed when esp-mqtt creates the client. Recreate a live slot if
+      // a settings change adds or removes its paired-primary role.
+      resetBrokerConnection(i);
+    }
+  }
 
   for (int i = 0; i < MQTT_MAX_BROKERS; i++) {
     const MqttBrokerConfig &b = _settings.broker(i);
@@ -950,6 +982,10 @@ void MqttReporter::ensureIdentityStrings() {
     StrHelper::strncpy(_clients[i].status_topic, status_topic.c_str(), sizeof(_clients[i].status_topic));
     StrHelper::strncpy(_clients[i].packets_topic, packets_topic.c_str(), sizeof(_clients[i].packets_topic));
     StrHelper::strncpy(_clients[i].neighbors_topic, neighbors_topic.c_str(), sizeof(_clients[i].neighbors_topic));
+    releaseReporterBuffer(_clients[i].offline_payload);
+    _clients[i].offline_payload = nullptr;
+    _clients[i].offline_payload_len = 0;
+    if (_clients[i].status_suppressed) continue;
     size_t offline_payload_len = 0;
     if (!buildStatusPayload(i, "offline", offline_payload_len) ||
         offline_payload_len > mqtt_publish::kMaxLwtPayloadBytes ||
@@ -1197,7 +1233,8 @@ bool MqttReporter::connectMQTT(int idx) {
   if (bc.started) return true;
   if (WiFi.status() != WL_CONNECTED) return false;
   if (broker.uri[0] == '\0') return false;
-  if (bc.status_topic[0] == '\0' || bc.offline_payload == nullptr) return false;
+  if (bc.status_topic[0] == '\0' ||
+      (!bc.status_suppressed && bc.offline_payload == nullptr)) return false;
   const mqtt_tls_cap::Transport requested_transport =
       mqtt_tls_cap::transportForUri(broker.uri);
   if (mqtt_tls_cap::countsAgainstTlsBudget(requested_transport) &&
@@ -1262,11 +1299,13 @@ bool MqttReporter::connectMQTT(int idx) {
   // connect with "Connect message cannot be created".
   mqtt_config.buffer_size = mqtt_publish::kConnectBufferBytes;
   mqtt_config.out_buffer_size = mqtt_publish::kConnectBufferBytes;
-  mqtt_config.lwt_topic = bc.status_topic;
-  mqtt_config.lwt_msg = bc.offline_payload;
-  mqtt_config.lwt_msg_len = (int)bc.offline_payload_len;
-  mqtt_config.lwt_qos = 0;
-  mqtt_config.lwt_retain = broker.retain_status != 0;
+  if (!bc.status_suppressed) {
+    mqtt_config.lwt_topic = bc.status_topic;
+    mqtt_config.lwt_msg = bc.offline_payload;
+    mqtt_config.lwt_msg_len = (int)bc.offline_payload_len;
+    mqtt_config.lwt_qos = 0;
+    mqtt_config.lwt_retain = broker.retain_status != 0;
+  }
   uint32_t generation = mqtt_reconnect::nextGeneration(
       bc.client_generation.load(std::memory_order_relaxed));
   bc.client_generation.store(generation, std::memory_order_release);
@@ -1445,6 +1484,7 @@ bool MqttReporter::acceptExistingClockFallback(const char *reason) {
 void MqttReporter::publishStatus(int idx, const char *status) {
   if (idx < 0 || idx >= MQTT_MAX_BROKERS) return;
   BrokerClient &bc = _clients[idx];
+  if (bc.status_suppressed) return;
   if (!bc.connected || bc.client == nullptr) return;
   if (bc.status_queued) return;
 
@@ -2023,7 +2063,7 @@ bool MqttReporter::buildNeighborsPayload(uint32_t now_ms, size_t &payload_len) c
 void MqttReporter::maybePublishNeighbors(uint32_t now_ms) {
   for (int i = 0; i < MQTT_MAX_BROKERS; i++) {
     BrokerClient &bc = _clients[i];
-    if (!bc.connected || bc.client == nullptr) continue;
+    if (bc.status_only || !bc.connected || bc.client == nullptr) continue;
 
     uint32_t interval_secs = _settings.broker(i).neighbor_interval_secs;
     if (interval_secs == 0) interval_secs = MQTT_NEIGHBOR_INTERVAL_SECS;
