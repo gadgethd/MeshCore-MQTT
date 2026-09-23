@@ -184,6 +184,51 @@ echo "Found ${#ENVS[@]} ESP repeater targets"
 echo "Firmware version: ${FIRMWARE_VERSION:-unknown}"
 echo
 
+# Restrict PR coverage to selected release targets without changing the
+# temporary PlatformIO configuration used by the release builder.
+STRICT_SELECTION=0
+if [[ -n "${MQTT_CI_ONLY:-}" ]]; then
+  IFS=', ' read -r -a REQUESTED_ENVS <<< "${MQTT_CI_ONLY}"
+  SELECTED_ENVS=()
+
+  for requested in "${REQUESTED_ENVS[@]}"; do
+    found=0
+    for env in "${ENVS[@]}"; do
+      if [[ "${env}" == "${requested}" ]]; then
+        found=1
+        break
+      fi
+    done
+
+    if [[ "${found}" -eq 0 ]]; then
+      echo "MQTT_CI_ONLY requested unknown ESP32 repeater environment: ${requested}" >&2
+      exit 1
+    fi
+
+    duplicate=0
+    for selected in "${SELECTED_ENVS[@]}"; do
+      if [[ "${selected}" == "${requested}" ]]; then
+        duplicate=1
+        break
+      fi
+    done
+    if [[ "${duplicate}" -eq 0 ]]; then
+      SELECTED_ENVS+=("${requested}")
+    fi
+  done
+
+  if [[ "${#SELECTED_ENVS[@]}" -eq 0 ]]; then
+    echo "MQTT_CI_ONLY did not select any ESP32 repeater environments." >&2
+    exit 1
+  fi
+
+  ENVS=("${SELECTED_ENVS[@]}")
+  STRICT_SELECTION=1
+  echo "Selected ${#ENVS[@]} ESP repeater target(s) via MQTT_CI_ONLY"
+  printf '  %s\n' "${ENVS[@]}"
+  echo
+fi
+
 rm -rf "${OUT_DIR}"
 mkdir -p "${OUT_DIR}"
 
@@ -214,6 +259,11 @@ done
 if [ "${#FAIL[@]}" -gt 0 ]; then
   echo "Some targets failed (C6/C3 experimental boards are expected to fail)."
   echo "Release will include only passing targets."
+fi
+
+if [[ "${STRICT_SELECTION}" -eq 1 && "${#FAIL[@]}" -gt 0 ]]; then
+  echo "Selected MQTT CI target(s) failed."
+  exit 1
 fi
 
 if [ "${#PASS[@]}" -eq 0 ]; then
