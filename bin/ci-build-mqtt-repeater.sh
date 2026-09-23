@@ -105,6 +105,8 @@ build_mqtt_firmware() {
   local version="${FIRMWARE_VERSION:-unknown}"
   local build_env
   build_env="$(printf '%s' "${base_env}" | tr -c '[:alnum:]_' '_')_mqtt_ci"
+  local build_log
+  build_log=$(mktemp /tmp/meshcore-mqtt-build-XXXXXX.log)
 
   # Only disable OTA for boards with <16MB flash to save flash space
   local flash_size
@@ -134,15 +136,19 @@ ${disable_ota}
 EOF
 
   echo "  Building ${base_env} (env: ${build_env})..."
-  if ! "${PIO_BIN}" run -c "${temp_conf}" -e "${build_env}" > /dev/null 2>&1; then
+  if ! "${PIO_BIN}" run -c "${temp_conf}" -e "${build_env}" > "${build_log}" 2>&1; then
     echo "  FAILED: ${base_env} compile error"
+    tail -n 80 "${build_log}"
+    rm -f "${build_log}"
     rm -f "${temp_conf}"
     return 1
   fi
 
   # Run mergebin to get the full flash image
-  if ! "${PIO_BIN}" run -c "${temp_conf}" -e "${build_env}" -t mergebin > /dev/null 2>&1; then
+  if ! "${PIO_BIN}" run -c "${temp_conf}" -e "${build_env}" -t mergebin > "${build_log}" 2>&1; then
     echo "  FAILED: ${base_env} mergebin error"
+    tail -n 80 "${build_log}"
+    rm -f "${build_log}"
     rm -f "${temp_conf}"
     return 1
   fi
@@ -167,6 +173,7 @@ EOF
   fi
 
   echo "  OK: ${base_env}"
+  rm -f "${build_log}"
   rm -f "${temp_conf}"
   return 0
 }
