@@ -114,12 +114,12 @@ void UITask::renderCurrScreen() {
 
 #if defined(ESP32) && defined(WITH_MQTT_REPORTER)
     // configured WiFi SSID
-    _display->setColor(DisplayDriver::LIGHT);
+    _display->setColor(UIColor::primary_txt);
     _display->drawTextEllipsized(0, 44, _display->width(), mqtt_reporter.getWiFiSsid());
 
     // live WiFi connection state
     _display->setCursor(0, 54);
-    _display->setColor(mqtt_reporter.isWiFiConnected() ? DisplayDriver::GREEN : DisplayDriver::RED);
+    _display->setColor(mqtt_reporter.isWiFiConnected() ? UIColor::primary_txt : UIColor::warning_txt);
     sprintf(tmp, "WiFi: %s", mqtt_reporter.isWiFiConnected() ? "Connected" : "Disconnected");
     _display->print(tmp);
 #endif
