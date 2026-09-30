@@ -7,6 +7,7 @@ on:
       - 'src/**'
       - 'examples/**'
       - 'variants/**'
+      - 'bin/ci-build-mqtt-repeater.sh'
       - 'platformio.ini'
       - '.github/workflows/pr-build-check.yml'
   push:
@@ -15,6 +16,7 @@ on:
       - 'src/**'
       - 'examples/**'
       - 'variants/**'
+      - 'bin/ci-build-mqtt-repeater.sh'
       - 'platformio.ini'
       - '.github/workflows/pr-build-check.yml'
 
@@ -28,6 +30,10 @@ jobs:
           # ESP32-S3 (most common platform)
           - Heltec_v3_companion_radio_ble
           - Heltec_v3_repeater
+          - heltec_v4_repeater_mqtt
+          - LilyGo_TBeam_1W_repeater_mqtt
+          - LilyGo_TDeck_repeater_mqtt
+          - LilyGo_TETH_Elite_sx1262_repeater_mqtt
           - Heltec_v3_room_server
           # nRF52
           - RAK_4631_companion_radio_ble
@@ -56,3 +62,25 @@ jobs:
 
       - name: Build ${{ matrix.environment }}
         run: pio run -e ${{ matrix.environment }}
+
+  station-mqtt-build:
+    name: MQTT ${{ matrix.environment }}
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        environment:
+          - Station_G2_repeater
+          - Station_G3_ESP32_repeater
+
+    steps:
+      - name: Clone Repo
+        uses: actions/checkout@v6
+
+      - name: Setup Build Environment
+        uses: ./.github/actions/setup-build-environment
+
+      - name: Build MQTT ${{ matrix.environment }}
+        env:
+          MQTT_CI_ONLY: ${{ matrix.environment }}
+        run: bash bin/ci-build-mqtt-repeater.sh
